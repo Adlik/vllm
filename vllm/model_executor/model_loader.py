@@ -1,6 +1,7 @@
 """Utilities for selecting and loading models."""
 import contextlib
 from typing import Type
+import gc
 
 import torch
 import torch.nn as nn
@@ -10,6 +11,8 @@ from vllm.config import ModelConfig
 from vllm.model_executor.models import *  # pylint: disable=wildcard-import
 from vllm.model_executor.weight_utils import (get_quant_config,
                                               initialize_dummy_weights)
+from vllm.model_executor.parallel_utils.layers import (ColumnParallelLinear,
+                                                       RowParallelLinear)
 
 # TODO(woosuk): Lazy-load the model classes.
 _MODEL_REGISTRY = {
@@ -63,6 +66,44 @@ def _get_model_architecture(config: PretrainedConfig) -> Type[nn.Module]:
         f"Supported architectures: {list(_MODEL_REGISTRY.keys())}")
 
 
+def _replace_quant_params(model,
+                          modules_to_not_convert="lm_head",
+                          auto_quant_mode="llm_int8"):
+    """
+    modules_to_not_convert (`str`, *optional*, defaults to `lm_head`):
+            Name of the module to not convert in `Linear8bitLt`.
+            In practice we keep the `lm_head` in full precision
+            for numerical stability reasons.
+    """
+    if not isinstance(modules_to_not_convert, list):
+        modules_to_not_convert = [modules_to_not_convert]
+    for name, module in model.named_children():
+        if len(list(module.children())) > 0:
+            _replace_quant_params(module, modules_to_not_convert, auto_quant_mode)
+        if isinstance(module,(ColumnParallelLinear, RowParallelLinear)) and \
+            name not in modules_to_not_convert:
+            param = module._parameters["weight"]
+            if auto_quant_mode =="llm_int8":
+                import bitsandbytes as bnb
+                module.state = bnb.MatmulLtState()
+                # Necessary for stacked layers
+                module.state.threshold = 6.0
+                module.state.has_fp16_weights = False
+                module.state.memory_efficient_backward = False
+                module.state.use_pool = True
+
+                new_value = bnb.nn.Int8Params(param.data,
+                                              requires_grad=False,
+                                              has_fp16_weights=False)
+            elif auto_quant_mode == "weight_int4":
+                from vllm.model_executor.quantization_utils.auto_quant import \
+                    Int4Params
+                new_value = Int4Params(param.data)
+            module._parameters["weight"] = new_value
+            del param
+            torch.cuda.empty_cache()
+
+
 def get_model(model_config: ModelConfig) -> nn.Module:
     model_class = _get_model_architecture(model_config.hf_config)
 
@@ -89,14 +130,17 @@ def get_model(model_config: ModelConfig) -> nn.Module:
                 f"{model_config.dtype} is not supported for quantization "
                 f"method {model_config.quantization}. Supported dtypes: "
                 f"{supported_dtypes}")
+    
 
     with _set_default_torch_dtype(model_config.dtype):
         # Create a model instance.
         # The weights will be initialized as empty tensors.
         if model_class in _MODEL_CLASSES_SUPPORT_QUANTIZATION:
-            model = model_class(model_config.hf_config, quant_config)
+            model = model_class(model_config.hf_config, quant_config,
+                                auto_quant_mode=model_config.auto_quant_mode)
         else:
-            model = model_class(model_config.hf_config)
+            model = model_class(model_config.hf_config,
+                                auto_quant_mode=model_config.auto_quant_mode)
         if model_config.load_format == "dummy":
             model = model.cuda()
             # NOTE(woosuk): For accurate performance evaluation, we assign
@@ -104,7 +148,21 @@ def get_model(model_config: ModelConfig) -> nn.Module:
             initialize_dummy_weights(model)
         else:
             # Load the weights from the cached or downloaded files.
+            modules_to_not_convert = ["lm_head"]
             model.load_weights(model_config.model, model_config.download_dir,
                                model_config.load_format, model_config.revision)
+            if model_config.auto_quant_mode in [
+                    "llm_int8", "weight_int4"
+            ]:
+                _replace_quant_params(
+                    model,
+                    modules_to_not_convert=modules_to_not_convert,
+                    auto_quant_mode=model_config.auto_quant_mode)
             model = model.cuda()
+            gc.collect()
+            torch.cuda.empty_cache()
+            print("Memory allocated:",
+                  torch.cuda.memory_allocated(torch.cuda.current_device()))
+            print("Memory reserved:",
+                  torch.cuda.memory_reserved(torch.cuda.current_device()))
     return model.eval()

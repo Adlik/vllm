@@ -39,7 +39,7 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class GLMAttention(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.hidden_size = config.hidden_size
         tp_size = get_tensor_model_parallel_world_size()
@@ -63,12 +63,14 @@ class GLMAttention(nn.Module):
             self.head_dim,
             bias=config.add_qkv_bias,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.dense = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             config.hidden_size,
             bias=config.add_bias_linear,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
         self.attn = PagedAttentionWithRoPE(
@@ -117,7 +119,7 @@ class GLMMLP(nn.Module):
     state back into h hidden dimension.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, auto_quant_mode: Optional[str]=None,):
         super().__init__()
 
         self.add_bias = config.add_bias_linear
@@ -128,6 +130,7 @@ class GLMMLP(nn.Module):
             config.ffn_hidden_size * 2,
             bias=config.add_bias_linear,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
 
         self.activation_func = SiluAndMul()
@@ -138,6 +141,7 @@ class GLMMLP(nn.Module):
             config.hidden_size,
             bias=config.add_bias_linear,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
     def forward(self, hidden_states):
@@ -159,6 +163,7 @@ class GLMBlock(nn.Module):
     def __init__(
         self,
         config,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.apply_residual_connection_post_layernorm = (
@@ -172,7 +177,8 @@ class GLMBlock(nn.Module):
                                                eps=config.layernorm_epsilon)
 
         # Self attention.
-        self.self_attention = GLMAttention(config)
+        self.self_attention = GLMAttention(config,
+                                           auto_quant_mode=auto_quant_mode)
         self.hidden_dropout = config.hidden_dropout
 
         # Layernorm on the attention output
@@ -180,7 +186,7 @@ class GLMBlock(nn.Module):
             config.hidden_size, eps=config.layernorm_epsilon)
 
         # MLP
-        self.mlp = GLMMLP(config)
+        self.mlp = GLMMLP(config, auto_quant_mode=auto_quant_mode)
 
     def forward(
         self,
@@ -227,7 +233,7 @@ class GLMBlock(nn.Module):
 class GLMTransformer(nn.Module):
     """Transformer class."""
 
-    def __init__(self, config):
+    def __init__(self, config, auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.post_layer_norm = config.post_layer_norm
 
@@ -236,7 +242,7 @@ class GLMTransformer(nn.Module):
 
         # Transformer layers.
         self.layers = nn.ModuleList(
-            [GLMBlock(config) for i in range(self.num_layers)])
+            [GLMBlock(config, auto_quant_mode) for i in range(self.num_layers)])
 
         if self.post_layer_norm:
             layer_norm_func = RMSNorm if config.rmsnorm else LayerNorm
@@ -274,7 +280,7 @@ class GLMTransformer(nn.Module):
 
 class ChatGLMModel(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, auto_quant_mode: Optional[str]=None,):
         super().__init__()
 
         self.embedding = VocabParallelEmbedding(config.padded_vocab_size,
@@ -283,7 +289,8 @@ class ChatGLMModel(nn.Module):
         self.num_layers = config.num_layers
         self.multi_query_group_num = config.multi_query_group_num
         self.kv_channels = config.kv_channels
-        self.encoder = GLMTransformer(config)
+        self.encoder = GLMTransformer(config,
+                                      auto_quant_mode=auto_quant_mode,)
 
         self.output_layer = ColumnParallelLinear(
             config.hidden_size,
@@ -291,6 +298,7 @@ class ChatGLMModel(nn.Module):
             bias=False,
             gather_output=False,
             params_dtype=config.torch_dtype,
+            auto_quant_mode=auto_quant_mode,
         )
 
     def forward(
@@ -317,10 +325,11 @@ class ChatGLMModel(nn.Module):
 
 class ChatGLMForCausalLM(nn.Module):
 
-    def __init__(self, config: ChatGLMConfig):
+    def __init__(self, config: ChatGLMConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config: ChatGLMConfig = config
-        self.transformer = ChatGLMModel(config)
+        self.transformer = ChatGLMModel(config, auto_quant_mode)
         self.lm_head_weight = self.transformer.output_layer.weight
         self.sampler = Sampler(config.padded_vocab_size)
 

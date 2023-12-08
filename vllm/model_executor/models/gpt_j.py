@@ -44,7 +44,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class GPTJAttention(nn.Module):
 
-    def __init__(self, config: GPTJConfig):
+    def __init__(self, config: GPTJConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.total_num_heads = config.num_attention_heads
         self.hidden_size = config.hidden_size
@@ -55,12 +56,14 @@ class GPTJAttention(nn.Module):
             3 * config.hidden_size,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.out_proj = RowParallelLinear(
             config.hidden_size,
             config.hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
         tp_world_size = get_tensor_model_parallel_world_size()
@@ -102,18 +105,21 @@ class GPTJAttention(nn.Module):
 
 class GPTJMLP(nn.Module):
 
-    def __init__(self, intermediate_size: int, config: GPTJConfig):
+    def __init__(self, intermediate_size: int, config: GPTJConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.n_embd
         self.fc_in = ColumnParallelLinear(
             hidden_size,
             intermediate_size,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.fc_out = RowParallelLinear(
             intermediate_size,
             hidden_size,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.act = get_act_fn(config.activation_function)
 
@@ -126,15 +132,16 @@ class GPTJMLP(nn.Module):
 
 class GPTJBlock(nn.Module):
 
-    def __init__(self, config: GPTJConfig):
+    def __init__(self, config: GPTJConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         if config.n_inner is None:
             inner_dim = 4 * config.n_embd
         else:
             inner_dim = config.n_inner
         self.ln_1 = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
-        self.attn = GPTJAttention(config)
-        self.mlp = GPTJMLP(inner_dim, config)
+        self.attn = GPTJAttention(config, auto_quant_mode)
+        self.mlp = GPTJMLP(inner_dim, config, auto_quant_mode)
 
     def forward(
         self,
@@ -160,7 +167,8 @@ class GPTJBlock(nn.Module):
 
 class GPTJModel(nn.Module):
 
-    def __init__(self, config: GPTJConfig):
+    def __init__(self, config: GPTJConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         self.embed_dim = config.n_embd
@@ -169,7 +177,7 @@ class GPTJModel(nn.Module):
             self.embed_dim,
         )
         self.h = nn.ModuleList(
-            [GPTJBlock(config) for _ in range(config.n_layer)])
+            [GPTJBlock(config, auto_quant_mode) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -200,11 +208,12 @@ class GPTJModel(nn.Module):
 
 class GPTJForCausalLM(nn.Module):
 
-    def __init__(self, config: GPTJConfig):
+    def __init__(self, config: GPTJConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         assert not config.tie_word_embeddings
-        self.transformer = GPTJModel(config)
+        self.transformer = GPTJModel(config, auto_quant_mode)
         self.lm_head = ColumnParallelLinear(
             config.n_embd,
             config.vocab_size,

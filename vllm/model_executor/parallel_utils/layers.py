@@ -10,6 +10,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
+import bitsandbytes as bnb
 
 from vllm.model_executor.parallel_utils.parallel_state import (
     get_tensor_model_parallel_rank,
@@ -25,6 +26,10 @@ from vllm.model_executor.parallel_utils.utils import (
     split_tensor_along_last_dim,
 )
 
+try:
+    from vllm import quantization_ops
+except ImportError:
+    pass
 
 class VocabParallelEmbedding(torch.nn.Module):
     """Embedding parallelized in the vocabulary dimension.
@@ -116,6 +121,7 @@ class ColumnParallelLinear(torch.nn.Module):
         skip_bias_add: bool = False,
         params_dtype: Optional[torch.dtype] = None,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str] = None,
     ):
         super().__init__()
 
@@ -128,9 +134,15 @@ class ColumnParallelLinear(torch.nn.Module):
         self.output_size_per_partition = divide(output_size, self.tp_size)
         self.skip_bias_add = skip_bias_add
         self.quant_config = quant_config
+        self.auto_quant_mode = auto_quant_mode
 
         if params_dtype is None:
             params_dtype = torch.get_default_dtype()
+
+        if self.auto_quant_mode:
+            self.use_cpu_initialization = True
+        else:
+            self.use_cpu_initialization = False
 
         # Parameters.
         # NOTE: torch.nn.functional.linear performs XA^T + b and as a result
@@ -140,16 +152,24 @@ class ColumnParallelLinear(torch.nn.Module):
         if bias:
             self.bias = Parameter(
                 torch.empty(self.output_size_per_partition,
-                            device=torch.cuda.current_device(),
+                            device=None if self.use_cpu_initialization
+                                else torch.cuda.current_device(),
                             dtype=params_dtype))
         else:
             self.register_parameter('bias', None)
+
+    def init_8bit_state(self):
+        self.state.CB = self.weight.CB
+        self.state.SCB = self.weight.SCB
+        self.weight.CB = None
+        self.weight.SCB = None
 
     def create_weights(self, dtype: torch.dtype) -> None:
         self.weight = Parameter(
             torch.empty(self.output_size_per_partition,
                         self.input_size,
-                        device=torch.cuda.current_device(),
+                        device=None if self.use_cpu_initialization
+                          else torch.cuda.current_device(),
                         dtype=dtype))
 
     def apply_weights(
@@ -157,7 +177,25 @@ class ColumnParallelLinear(torch.nn.Module):
         x: torch.Tensor,
         bias: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        return F.linear(x, self.weight, bias)
+        if self.auto_quant_mode:
+            if self.auto_quant_mode == "llm_int8":
+                
+                output_parallel =  bnb.matmul(x,
+                                   self.weight,
+                                   bias=bias,
+                                   state=self.state)
+                return output_parallel
+            elif self.auto_quant_mode == "weight_int4":
+                out_shape = x.shape[:-1] + (self.output_size_per_partition,)
+                output_parallel = quantization_ops.int4_f16_gemm(
+                    x.reshape(-1, x.shape[-1]), self.weight.data, self.weight.scales_zeros)
+                output_parallel = output_parallel + self.bias if self.bias is not None else output_parallel
+                output_parallel = output_parallel.reshape(out_shape)
+                return output_parallel
+            else:
+                raise NotImplementedError(f'auto_quant_mode: {self.auto_quant_mode} not implemented')
+        else:
+            return F.linear(x, self.weight, bias)
 
     def forward(self, input_):
         """Forward of ColumnParallelLinear
@@ -169,6 +207,8 @@ class ColumnParallelLinear(torch.nn.Module):
             - output
             - bias
         """
+        if self.auto_quant_mode == "llm_int8" and self.weight.CB is not None:
+            self.init_8bit_state()
         bias = self.bias if not self.skip_bias_add else None
 
         input_parallel = input_
@@ -180,6 +220,13 @@ class ColumnParallelLinear(torch.nn.Module):
         else:
             output = output_parallel
         output_bias = self.bias if self.skip_bias_add else None
+        if self.auto_quant_mode == "llm_int8" and not self.state.has_fp16_weights:
+            if self.state.CB is not None and self.state.CxB is not None:
+                # we converted 8-bit row major to turing/ampere format
+                # in the first inference pass
+                # we no longer need the row-major weight
+                del self.state.CB
+                self.weight.data = self.state.CxB
         return output, output_bias
 
 
@@ -221,6 +268,7 @@ class RowParallelLinear(torch.nn.Module):
         params_dtype: Optional[torch.dtype] = None,
         reduce_results: bool = True,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str] = None,
     ):
         super().__init__()
         # Keep input parameters
@@ -236,6 +284,12 @@ class RowParallelLinear(torch.nn.Module):
         self.input_size_per_partition = divide(input_size, self.tp_size)
         self.skip_bias_add = skip_bias_add
         self.quant_config = quant_config
+        self.auto_quant_mode = auto_quant_mode
+
+        if self.auto_quant_mode:
+            self.use_cpu_initialization = True
+        else:
+            self.use_cpu_initialization = False
 
         self.create_weights(params_dtype)
 
@@ -246,7 +300,8 @@ class RowParallelLinear(torch.nn.Module):
         if bias:
             self.bias = Parameter(
                 torch.empty(self.output_size,
-                            device=torch.cuda.current_device(),
+                            device=None if self.use_cpu_initialization
+                                else torch.cuda.current_device(),
                             dtype=params_dtype))
 
             # Always initialize bias to zero.
@@ -259,11 +314,35 @@ class RowParallelLinear(torch.nn.Module):
         self.weight = Parameter(
             torch.empty(self.output_size,
                         self.input_size_per_partition,
-                        device=torch.cuda.current_device(),
+                        device=None if self.use_cpu_initialization
+                          else torch.cuda.current_device(),
                         dtype=dtype))
 
     def apply_weights(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, self.weight)
+        if self.auto_quant_mode:
+            if self.auto_quant_mode == "llm_int8":
+                
+                output_parallel =  bnb.matmul(x,
+                                   self.weight,
+                                   bias=None,
+                                   state=self.state)
+                return output_parallel
+            elif self.auto_quant_mode == "weight_int4":
+                out_shape = x.shape[:-1] + (self.output_size,)
+                output_parallel = quantization_ops.int4_f16_gemm(
+                    x.reshape(-1, x.shape[-1]), self.weight.data,
+                    self.weight.scales_zeros).reshape(out_shape)
+                return output_parallel
+            else:
+                raise NotImplementedError(f'auto_quant_mode: {self.auto_quant_mode} not implemented')
+        else:
+            return F.linear(x, self.weight)
+
+    def init_8bit_state(self):
+        self.state.CB = self.weight.CB
+        self.state.SCB = self.weight.SCB
+        self.weight.CB = None
+        self.weight.SCB = None
 
     def forward(self, input_):
         """Forward of RowParallelLinear
@@ -277,6 +356,8 @@ class RowParallelLinear(torch.nn.Module):
             - output
             - bias
         """
+        if self.auto_quant_mode == "llm_int8" and self.weight.CB is not None:
+            self.init_8bit_state()
         # Set up backprop all-reduce.
         if self.input_is_parallel:
             input_parallel = input_
@@ -300,4 +381,11 @@ class RowParallelLinear(torch.nn.Module):
         else:
             output = output_
             output_bias = self.bias
+        if self.auto_quant_mode == "llm_int8" and not self.state.has_fp16_weights:
+            if self.state.CB is not None and self.state.CxB is not None:
+                # we converted 8-bit row major to turing/ampere format
+                # in the first inference pass
+                # we no longer need the row-major weight
+                del self.state.CB
+                self.weight.data = self.state.CxB
         return output, output_bias

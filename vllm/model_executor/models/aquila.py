@@ -55,6 +55,7 @@ class AquilaMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(
@@ -62,12 +63,14 @@ class AquilaMLP(nn.Module):
             2 * intermediate_size,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -111,6 +114,7 @@ class AquilaAttention(nn.Module):
         rope_theta: float = 10000,
         max_position_embeddings: int = 8192,
         rope_scaling: Optional[Dict[str, Any]] = None,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -134,12 +138,14 @@ class AquilaAttention(nn.Module):
             self.head_dim,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         self.attn = PagedAttentionWithRoPE(
             self.num_heads,
@@ -171,7 +177,7 @@ class AquilaAttention(nn.Module):
 
 class AquilaDecoderLayer(nn.Module):
 
-    def __init__(self, config: AquilaConfig):
+    def __init__(self, config: AquilaConfig, auto_quant_mode: Optional[str]=None):
         super().__init__()
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -185,11 +191,13 @@ class AquilaDecoderLayer(nn.Module):
             rope_theta=rope_theta,
             max_position_embeddings=max_position_embeddings,
             rope_scaling=rope_scaling,
+            auto_quant_mode=auto_quant_mode
         )
         self.mlp = AquilaMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            auto_quant_mode=auto_quant_mode
         )
         self.input_layernorm = AquilaRMSNorm(config.hidden_size,
                                              eps=config.rms_norm_eps)
@@ -226,7 +234,7 @@ class AquilaDecoderLayer(nn.Module):
 
 class AquilaModel(nn.Module):
 
-    def __init__(self, config: AquilaConfig):
+    def __init__(self, config: AquilaConfig, auto_quant_mode: Optional[str]=None):
         super().__init__()
         self.config = config
         self.padding_idx = config.pad_token_id
@@ -238,7 +246,7 @@ class AquilaModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            AquilaDecoderLayer(config) for _ in range(config.num_hidden_layers)
+            AquilaDecoderLayer(config, auto_quant_mode) for _ in range(config.num_hidden_layers)
         ])
         self.norm = AquilaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -271,10 +279,10 @@ class AquilaModel(nn.Module):
 
 class AquilaForCausalLM(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, auto_quant_mode: Optional[str]=None):
         super().__init__()
         self.config = config
-        self.model = AquilaModel(config)
+        self.model = AquilaModel(config, auto_quant_mode)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.lm_head = ColumnParallelLinear(
             config.hidden_size,

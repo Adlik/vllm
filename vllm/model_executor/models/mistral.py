@@ -57,18 +57,21 @@ class MistralMLP(nn.Module):
         intermediate_size: int,
         hidden_act: str,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.gate_up_proj = ParallelLinear.column(hidden_size,
                                                   2 * intermediate_size,
                                                   bias=False,
                                                   gather_output=False,
-                                                  quant_config=quant_config)
+                                                  quant_config=quant_config,
+                                                  auto_quant_mode=auto_quant_mode)
         self.down_proj = ParallelLinear.row(intermediate_size,
                                             hidden_size,
                                             bias=False,
                                             input_is_parallel=True,
-                                            quant_config=quant_config)
+                                            quant_config=quant_config,
+                                            auto_quant_mode=auto_quant_mode)
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
@@ -90,7 +93,8 @@ class MistralAttention(nn.Module):
                  max_position: int = 4096 * 32,
                  rope_theta: float = 10000,
                  quant_config: Optional[QuantizationConfig] = None,
-                 sliding_window: Optional[int] = None) -> None:
+                 sliding_window: Optional[int] = None,
+                 auto_quant_mode: Optional[str]=None) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         tp_size = get_tensor_model_parallel_world_size()
@@ -114,6 +118,7 @@ class MistralAttention(nn.Module):
             bias=False,
             gather_output=False,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.o_proj = ParallelLinear.row(
             self.total_num_heads * self.head_dim,
@@ -121,6 +126,7 @@ class MistralAttention(nn.Module):
             bias=False,
             input_is_parallel=True,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.attn = PagedAttentionWithRoPE(self.num_heads,
                                            self.head_dim,
@@ -154,6 +160,7 @@ class MistralDecoderLayer(nn.Module):
         self,
         config: MistralConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -166,12 +173,14 @@ class MistralDecoderLayer(nn.Module):
             num_kv_heads=config.num_key_value_heads,
             rope_theta=rope_theta,
             quant_config=quant_config,
-            sliding_window=config.sliding_window)
+            sliding_window=config.sliding_window,
+            auto_quant_mode=auto_quant_mode)
         self.mlp = MistralMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -212,6 +221,7 @@ class MistralModel(nn.Module):
         self,
         config: MistralConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -224,7 +234,7 @@ class MistralModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            MistralDecoderLayer(config, quant_config)
+            MistralDecoderLayer(config, quant_config, auto_quant_mode)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -261,11 +271,12 @@ class MistralForCausalLM(nn.Module):
         self,
         config: MistralConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.config = config
         self.quant_config = quant_config
-        self.model = MistralModel(config, quant_config)
+        self.model = MistralModel(config, quant_config, auto_quant_mode)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         # NOTE: The LM head is not quantized.
         self.lm_head = ParallelLinear.column(config.hidden_size,

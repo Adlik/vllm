@@ -46,6 +46,7 @@ class QWenMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str = "silu",
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(
@@ -53,12 +54,14 @@ class QWenMLP(nn.Module):
             2 * intermediate_size,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.c_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -79,7 +82,8 @@ class QWenAttention(nn.Module):
                  num_heads: int,
                  max_position_embeddings: int,
                  rope_theta: float = 10000,
-                 rope_scaling: Optional[Dict[str, Any]] = None):
+                 rope_scaling: Optional[Dict[str, Any]] = None,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.hidden_size = hidden_size
         tensor_model_parallel_world_size = get_tensor_model_parallel_world_size(
@@ -96,12 +100,14 @@ class QWenAttention(nn.Module):
             3 * hidden_size,
             bias=True,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.c_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         self.scaling = self.head_dim**-0.5
         self.attn = PagedAttentionWithRoPE(
@@ -134,7 +140,8 @@ class QWenAttention(nn.Module):
 
 class QWenBlock(nn.Module):
 
-    def __init__(self, config: QWenConfig):
+    def __init__(self, config: QWenConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.ln_1 = RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
 
@@ -144,11 +151,13 @@ class QWenBlock(nn.Module):
                                   config.num_attention_heads,
                                   config.max_position_embeddings,
                                   rope_theta=rope_theta,
-                                  rope_scaling=rope_scaling)
+                                  rope_scaling=rope_scaling,
+                                  auto_quant_mode=auto_quant_mode)
 
         self.ln_2 = RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
 
-        self.mlp = QWenMLP(config.hidden_size, config.intermediate_size // 2)
+        self.mlp = QWenMLP(config.hidden_size, config.intermediate_size // 2,
+                           auto_quant_mode=auto_quant_mode)
 
     def forward(
         self,
@@ -180,7 +189,8 @@ class QWenBlock(nn.Module):
 
 class QWenModel(nn.Module):
 
-    def __init__(self, config: QWenConfig):
+    def __init__(self, config: QWenConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         self.vocab_size = config.vocab_size
@@ -191,7 +201,7 @@ class QWenModel(nn.Module):
             config.hidden_size,
         )
         self.h = nn.ModuleList(
-            [QWenBlock(config) for _ in range(config.num_hidden_layers)])
+            [QWenBlock(config, auto_quant_mode) for _ in range(config.num_hidden_layers)])
         self.ln_f = RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -222,10 +232,11 @@ class QWenModel(nn.Module):
 
 class QWenLMHeadModel(nn.Module):
 
-    def __init__(self, config: QWenConfig):
+    def __init__(self, config: QWenConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.transformer = QWenModel(config)
+        self.transformer = QWenModel(config, auto_quant_mode)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.lm_head = ColumnParallelLinear(
             config.hidden_size,

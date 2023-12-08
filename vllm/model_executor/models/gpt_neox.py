@@ -44,7 +44,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class GPTNeoXAttention(nn.Module):
 
-    def __init__(self, config: GPTNeoXConfig):
+    def __init__(self, config: GPTNeoXConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.total_num_heads = config.num_attention_heads
         self.hidden_size = config.hidden_size
@@ -60,11 +61,13 @@ class GPTNeoXAttention(nn.Module):
             config.hidden_size,
             3 * config.hidden_size,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.dense = RowParallelLinear(
             config.hidden_size,
             config.hidden_size,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
         scaling = self.head_size**-0.5
@@ -100,17 +103,20 @@ class GPTNeoXAttention(nn.Module):
 
 class GPTNeoXMLP(nn.Module):
 
-    def __init__(self, config: GPTNeoXConfig):
+    def __init__(self, config: GPTNeoXConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.dense_h_to_4h = ColumnParallelLinear(
             config.hidden_size,
             config.intermediate_size,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.dense_4h_to_h = RowParallelLinear(
             config.intermediate_size,
             config.hidden_size,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.act = get_act_fn(config.hidden_act)
 
@@ -123,15 +129,16 @@ class GPTNeoXMLP(nn.Module):
 
 class GPTNeoXLayer(nn.Module):
 
-    def __init__(self, config: GPTNeoXConfig):
+    def __init__(self, config: GPTNeoXConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.use_parallel_residual = config.use_parallel_residual
         self.input_layernorm = nn.LayerNorm(config.hidden_size,
                                             eps=config.layer_norm_eps)
         self.post_attention_layernorm = nn.LayerNorm(config.hidden_size,
                                                      eps=config.layer_norm_eps)
-        self.attention = GPTNeoXAttention(config)
-        self.mlp = GPTNeoXMLP(config)
+        self.attention = GPTNeoXAttention(config, auto_quant_mode)
+        self.mlp = GPTNeoXMLP(config, auto_quant_mode)
 
     def forward(
         self,
@@ -169,7 +176,8 @@ class GPTNeoXLayer(nn.Module):
 
 class GPTNeoXModel(nn.Module):
 
-    def __init__(self, config: GPTNeoXConfig):
+    def __init__(self, config: GPTNeoXConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
 
@@ -178,7 +186,7 @@ class GPTNeoXModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList(
-            [GPTNeoXLayer(config) for _ in range(config.num_hidden_layers)])
+            [GPTNeoXLayer(config, auto_quant_mode) for _ in range(config.num_hidden_layers)])
         self.final_layer_norm = nn.LayerNorm(config.hidden_size,
                                              eps=config.layer_norm_eps)
 
@@ -210,10 +218,11 @@ class GPTNeoXModel(nn.Module):
 
 class GPTNeoXForCausalLM(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.gpt_neox = GPTNeoXModel(config)
+        self.gpt_neox = GPTNeoXModel(config,auto_quant_mode)
         self.embed_out = ColumnParallelLinear(
             config.hidden_size,
             config.vocab_size,

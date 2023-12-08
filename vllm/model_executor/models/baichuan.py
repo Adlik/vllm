@@ -80,6 +80,7 @@ class BaiChuanMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(
@@ -87,12 +88,14 @@ class BaiChuanMLP(nn.Module):
             2 * intermediate_size,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -116,6 +119,7 @@ class BaiChuanAttention(nn.Module):
         position_embedding: str,
         rope_theta: float = 10000,
         max_position_embeddings: int = 8192,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -136,12 +140,14 @@ class BaiChuanAttention(nn.Module):
             3 * hidden_size,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         # Create the alibi slopes and slice them.
         if self.postion_embedding == "ALIBI":
@@ -188,7 +194,8 @@ class BaiChuanAttention(nn.Module):
 
 class BaiChuanDecoderLayer(nn.Module):
 
-    def __init__(self, config: BaiChuanConfig, position_embedding: str):
+    def __init__(self, config: BaiChuanConfig, position_embedding: str,
+                 auto_quant_mode: Optional[str]=None):
         super().__init__()
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -200,11 +207,13 @@ class BaiChuanDecoderLayer(nn.Module):
             position_embedding=position_embedding,
             rope_theta=rope_theta,
             max_position_embeddings=max_position_embeddings,
+            auto_quant_mode=auto_quant_mode
         )
         self.mlp = BaiChuanMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            auto_quant_mode=auto_quant_mode
         )
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -241,7 +250,8 @@ class BaiChuanDecoderLayer(nn.Module):
 
 class BaiChuanModel(nn.Module):
 
-    def __init__(self, config: BaiChuanConfig, position_embedding: str):
+    def __init__(self, config: BaiChuanConfig, position_embedding: str,
+                 auto_quant_mode: Optional[str]=None):
         super().__init__()
         self.config = config
         self.padding_idx = config.pad_token_id
@@ -252,7 +262,7 @@ class BaiChuanModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            BaiChuanDecoderLayer(config, position_embedding)
+            BaiChuanDecoderLayer(config, position_embedding, auto_quant_mode)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -285,10 +295,11 @@ class BaiChuanModel(nn.Module):
 
 class BaiChuanBaseForCausalLM(nn.Module):
 
-    def __init__(self, config, position_embedding: str):
+    def __init__(self, config, position_embedding: str, 
+                 auto_quant_mode: Optional[str]=None):
         super().__init__()
         self.config = config
-        self.model = BaiChuanModel(config, position_embedding)
+        self.model = BaiChuanModel(config, position_embedding, auto_quant_mode)
         self.lm_head = ColumnParallelLinear(
             config.hidden_size,
             config.vocab_size,
@@ -379,11 +390,11 @@ class BaiChuanBaseForCausalLM(nn.Module):
 
 class BaichuanForCausalLM(BaiChuanBaseForCausalLM):  # baichuan 13b
 
-    def __init__(self, config):
-        super().__init__(config, "ALIBI")
+    def __init__(self, config, auto_quant_mode: Optional[str]=None):
+        super().__init__(config, "ALIBI", auto_quant_mode)
 
 
 class BaiChuanForCausalLM(BaiChuanBaseForCausalLM):  # baichuan 7b
 
-    def __init__(self, config):
-        super().__init__(config, "ROPE")
+    def __init__(self, config, auto_quant_mode: Optional[str]=None):
+        super().__init__(config, "ROPE", auto_quant_mode)

@@ -32,6 +32,7 @@ class EngineArgs:
     revision: Optional[str] = None
     tokenizer_revision: Optional[str] = None
     quantization: Optional[str] = None
+    auto_quant_mode: Optional[str] = None
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -171,6 +172,18 @@ class EngineArgs:
                             choices=['awq', 'squeezellm', None],
                             default=None,
                             help='Method used to quantize the weights')
+        parser.add_argument(
+            '--auto-quant-mode',
+            type=str,
+            default=None,
+            choices=['llm_int8', 'weight_int4', None],
+            help='automatically quantizing the weight of FP16 to the specified type.'
+            'None indicates no quantization.'
+            '"llm_int8" means LLM.int8() method that is the combination of vector-wise'
+            'quantization and mixed precision decomposition. '
+            '"weight_int4" Indicates that the weight is automatically '
+            'converted into int4. '
+        )
         return parser
 
     @classmethod
@@ -189,7 +202,7 @@ class EngineArgs:
                                    self.download_dir, self.load_format,
                                    self.dtype, self.seed, self.revision,
                                    self.tokenizer_revision, self.max_model_len,
-                                   self.quantization)
+                                   self.quantization, self.auto_quant_mode)
         cache_config = CacheConfig(
             self.block_size, self.gpu_memory_utilization, self.swap_space,
             getattr(model_config.hf_config, 'sliding_window', None))

@@ -14,18 +14,7 @@ Easy, fast, and cheap LLM serving for everyone
 
 </p>
 
----
-
-*Latest News* 🔥
-- [2023/10] We hosted [the first vLLM meetup](https://lu.ma/first-vllm-meetup) in SF! Please find the meetup slides [here](https://docs.google.com/presentation/d/1QL-XPFXiFpDBh86DbEegFXBXFXjix4v032GhShbKf3s/edit?usp=sharing).
-- [2023/09] We created our [Discord server](https://discord.gg/jz7wjKhh6g)! Join us to discuss vLLM and LLM serving! We will also post the latest announcements and updates there.
-- [2023/09] We released our [PagedAttention paper](https://arxiv.org/abs/2309.06180) on arXiv!
-- [2023/08] We would like to express our sincere gratitude to [Andreessen Horowitz](https://a16z.com/2023/08/30/supporting-the-open-source-ai-community/) (a16z) for providing a generous grant to support the open-source development and research of vLLM.
-- [2023/07] Added support for LLaMA-2! You can run and serve 7B/13B/70B LLaMA-2s on vLLM with a single command!
-- [2023/06] Serving vLLM On any Cloud with SkyPilot. Check out a 1-click [example](https://github.com/skypilot-org/skypilot/blob/master/llm/vllm) to start the vLLM demo, and the [blog post](https://blog.skypilot.co/serving-llm-24x-faster-on-the-cloud-with-vllm-and-skypilot/) for the story behind vLLM development on the clouds.
-- [2023/06] We officially released vLLM! FastChat-vLLM integration has powered [LMSYS Vicuna and Chatbot Arena](https://chat.lmsys.org) since mid-April. Check out our [blog post](https://vllm.ai).
-
----
+## Performance Comparison
 
 vLLM is a fast and easy-to-use library for LLM inference and serving.
 
@@ -44,49 +33,36 @@ vLLM is flexible and easy to use with:
 - Streaming outputs
 - OpenAI-compatible API server
 
-vLLM seamlessly supports many Hugging Face models, including the following architectures:
 
-- Aquila & Aquila2 (`BAAI/AquilaChat2-7B`, `BAAI/AquilaChat2-34B`, `BAAI/Aquila-7B`, `BAAI/AquilaChat-7B`, etc.)
-- Baichuan (`baichuan-inc/Baichuan-7B`, `baichuan-inc/Baichuan-13B-Chat`, etc.)
-- BLOOM (`bigscience/bloom`, `bigscience/bloomz`, etc.)
-- Falcon (`tiiuae/falcon-7b`, `tiiuae/falcon-40b`, `tiiuae/falcon-rw-7b`, etc.)
-- GPT-2 (`gpt2`, `gpt2-xl`, etc.)
-- GPT BigCode (`bigcode/starcoder`, `bigcode/gpt_bigcode-santacoder`, etc.)
-- GPT-J (`EleutherAI/gpt-j-6b`, `nomic-ai/gpt4all-j`, etc.)
-- GPT-NeoX (`EleutherAI/gpt-neox-20b`, `databricks/dolly-v2-12b`, `stabilityai/stablelm-tuned-alpha-7b`, etc.)
-- InternLM (`internlm/internlm-7b`, `internlm/internlm-chat-7b`, etc.)
-- LLaMA & LLaMA-2 (`meta-llama/Llama-2-70b-hf`, `lmsys/vicuna-13b-v1.3`, `young-geng/koala`, `openlm-research/open_llama_13b`, etc.)
-- Mistral (`mistralai/Mistral-7B-v0.1`, `mistralai/Mistral-7B-Instruct-v0.1`, etc.)
-- MPT (`mosaicml/mpt-7b`, `mosaicml/mpt-30b`, etc.)
-- OPT (`facebook/opt-66b`, `facebook/opt-iml-max-30b`, etc.)
-- Qwen (`Qwen/Qwen-7B`, `Qwen/Qwen-7B-Chat`, etc.)
-
+## Install
 Install vLLM with pip or [from source](https://vllm.readthedocs.io/en/latest/getting_started/installation.html#build-from-source):
 
 ```bash
 pip install vllm
 ```
 
-## Getting Started
+## Quantization
+Quantization in previous versions already supports AWQ and SqueezeLLM quantization. This submission adds an int8 quantized submission, using the bitsandbytes core to perform 8-bit operations. At the same time, we also submitted a new 4-bit quantization implementation. We implement 4-bit groupwise quantization (RTN) for linear layers on vLLM. The smoothed model is directly loaded into vLLM, which automatically completes 4-bit weight quantization. In vLLM, we have implemented an efficient W4A16 CUDA kernel optimized from lmdeploy for the quantization of linear layers, which further enhances the acceleration effect. We will soon submit a [smoothquant+](https://arxiv.org/abs/2312.03788) algorithm to another git library. This algorithm smoothes the model by channel. By using SmoothQuant+, the Code Llama-34B can be quantified and deployed on a single 40G A100 GPU, with lossless accuracy and a throughput increase of 1.9-4.0 times compared to the FP16 model deployed on two 40G A100 GPUs. The latency per token is only 68% of the FP16 model deployed on two 40G A100 GPUs. This is the state-of-the-art 4-bit weight quantization as we know.
 
-Visit our [documentation](https://vllm.readthedocs.io/en/latest/) to get started.
-- [Installation](https://vllm.readthedocs.io/en/latest/getting_started/installation.html)
-- [Quickstart](https://vllm.readthedocs.io/en/latest/getting_started/quickstart.html)
-- [Supported Models](https://vllm.readthedocs.io/en/latest/models/supported_models.html)
+<div style="display:inline-block">
+  <img src="images/single_sequence_generation_compare.png" alt="single sequence generation with Code Llama-34B on the ShareGPT" height="300">
+  <img src="images/throughput_compare.png" alt="Comparison of inference throughput wiht Code Llama-34B" height="300">
+</div>
 
-## Contributing
+Configuring int8 or int4 is also very simple, just set auto_quant_mode to llm_int8 or weight_int4.
 
-We welcome and value any contributions and collaborations.
-Please check out [CONTRIBUTING.md](./CONTRIBUTING.md) for how to get involved.
-
-## Citation
-
-If you use vLLM for your research, please cite our [paper](https://arxiv.org/abs/2309.06180):
-```bibtex
-@inproceedings{kwon2023efficient,
-  title={Efficient Memory Management for Large Language Model Serving with PagedAttention},
-  author={Woosuk Kwon and Zhuohan Li and Siyuan Zhuang and Ying Sheng and Lianmin Zheng and Cody Hao Yu and Joseph E. Gonzalez and Hao Zhang and Ion Stoica},
-  booktitle={Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles},
-  year={2023}
-}
+```python
+llm = LLM(model="facebook/opt-125m",
+          trust_remote_code=True,
+          dtype='float16',
+          #auto_quant_mode="llm_int8")
+          auto_quant_mode="weight_int4")
 ```
+
+## Acknowledgements
+
+We would like to thank the following projects for their excellent work:
+- [vllm](https://github.com/vllm-project/vllm)
+- [LMDeploy](https://github.com/InternLM/lmdeploy)
+- [AWQ](https://github.com/mit-han-lab/llm-awq)
+- [FasterTransformer](https://github.com/NVIDIA/FasterTransformer)

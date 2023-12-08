@@ -39,7 +39,8 @@ def _get_alibi_slopes(
 
 class MptAttention(nn.Module):
 
-    def __init__(self, config: MptConfig):
+    def __init__(self, config: MptConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.d_model = config.d_model
         self.total_num_heads = config.n_heads
@@ -54,6 +55,7 @@ class MptAttention(nn.Module):
             3 * self.d_model,
             bias=not config.no_bias,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         if self.qk_ln:
             self.q_ln = nn.LayerNorm(self.d_model)
@@ -63,6 +65,7 @@ class MptAttention(nn.Module):
             self.d_model,
             bias=not config.no_bias,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
         tp_world_size = get_tensor_model_parallel_world_size()
@@ -107,7 +110,8 @@ class MptAttention(nn.Module):
 
 class MptMLP(nn.Module):
 
-    def __init__(self, config: MptConfig):
+    def __init__(self, config: MptConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.d_model
         expansion_ratio = config.expansion_ratio
@@ -117,6 +121,7 @@ class MptMLP(nn.Module):
             intermediate_size,
             bias=not config.no_bias,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.act = get_act_fn("gelu")
         self.down_proj = RowParallelLinear(
@@ -124,6 +129,7 @@ class MptMLP(nn.Module):
             hidden_size,
             bias=not config.no_bias,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -135,13 +141,14 @@ class MptMLP(nn.Module):
 
 class MptBlock(nn.Module):
 
-    def __init__(self, config: MptConfig):
+    def __init__(self, config: MptConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.d_model
         self.norm_1 = nn.LayerNorm(hidden_size)
-        self.attn = MptAttention(config)
+        self.attn = MptAttention(config, auto_quant_mode)
         self.norm_2 = nn.LayerNorm(hidden_size)
-        self.ffn = MptMLP(config)
+        self.ffn = MptMLP(config, auto_quant_mode)
 
     def forward(
         self,
@@ -168,7 +175,8 @@ class MptBlock(nn.Module):
 
 class MptModel(nn.Module):
 
-    def __init__(self, config: MptConfig):
+    def __init__(self, config: MptConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         assert config.embedding_fraction == 1.0
         assert config.norm_type == "low_precision_layernorm"
@@ -178,7 +186,7 @@ class MptModel(nn.Module):
             config.d_model,
         )
         self.blocks = nn.ModuleList(
-            [MptBlock(config) for _ in range(config.n_layers)])
+            [MptBlock(config, auto_quant_mode) for _ in range(config.n_layers)])
         self.norm_f = nn.LayerNorm(config.d_model)
         if config.no_bias:
             for module in self.modules():
@@ -215,12 +223,13 @@ class MptModel(nn.Module):
 
 class MptForCausalLM(nn.Module):
 
-    def __init__(self, config: MptConfig):
+    def __init__(self, config: MptConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         assert config.tie_word_embeddings
 
-        self.transformer = MptModel(config)
+        self.transformer = MptModel(config, auto_quant_mode)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.wte.weight
