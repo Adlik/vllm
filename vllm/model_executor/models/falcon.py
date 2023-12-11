@@ -86,7 +86,8 @@ def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
 
 class FalconAttention(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
 
         self.hidden_size = config.hidden_size
@@ -112,6 +113,7 @@ class FalconAttention(nn.Module):
                 bias=config.bias,
                 gather_output=False,
                 skip_bias_add=True,
+                auto_quant_mode=auto_quant_mode,
             )
         elif self.multi_query:
             self.total_num_kv_heads = 1
@@ -122,6 +124,7 @@ class FalconAttention(nn.Module):
                 bias=config.bias,
                 gather_output=False,
                 skip_bias_add=True,
+                auto_quant_mode=auto_quant_mode,
             )
             self.key_value = FalconLinear(self.hidden_size,
                                           2 * self.head_dim,
@@ -136,6 +139,7 @@ class FalconAttention(nn.Module):
                 bias=config.bias,
                 gather_output=False,
                 skip_bias_add=True,
+                auto_quant_mode=auto_quant_mode,
             )
 
         self.q_size = self.num_heads * self.head_dim
@@ -151,7 +155,8 @@ class FalconAttention(nn.Module):
             bias=config.bias,
             input_is_parallel=True,
             skip_bias_add=True,
-            reduce_results=self.reduce_row_parallel_results)
+            reduce_results=self.reduce_row_parallel_results,
+            auto_quant_mode=auto_quant_mode)
 
         self.use_rotary = config.rotary
         self.use_alibi = config.alibi
@@ -221,7 +226,8 @@ class FalconAttention(nn.Module):
 
 class FalconMLP(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.hidden_size
 
@@ -229,7 +235,8 @@ class FalconMLP(nn.Module):
                                                   4 * hidden_size,
                                                   bias=config.bias,
                                                   gather_output=False,
-                                                  skip_bias_add=True)
+                                                  skip_bias_add=True,
+                                                  auto_quant_mode=auto_quant_mode)
         self.act = nn.GELU()
         self.reduce_row_parallel_results = not (config.new_decoder_architecture
                                                 or config.parallel_attn)
@@ -239,7 +246,8 @@ class FalconMLP(nn.Module):
             bias=config.bias,
             input_is_parallel=True,
             skip_bias_add=True,
-            reduce_results=self.reduce_row_parallel_results)
+            reduce_results=self.reduce_row_parallel_results,
+            auto_quant_mode=auto_quant_mode)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # NOTE(zhuohan): Following huggingface, we do not fuse bias add here.
@@ -253,12 +261,13 @@ class FalconMLP(nn.Module):
 
 class FalconDecoderLayer(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
-        self.self_attention = FalconAttention(config)
-        self.mlp = FalconMLP(config)
+        self.self_attention = FalconAttention(config, auto_quant_mode)
+        self.mlp = FalconMLP(config, auto_quant_mode)
         self.config = config
 
         if config.new_decoder_architecture:
@@ -334,7 +343,8 @@ class FalconDecoderLayer(nn.Module):
 
 class FalconModel(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -349,7 +359,7 @@ class FalconModel(nn.Module):
 
         # Transformer blocks
         self.h = nn.ModuleList([
-            FalconDecoderLayer(config) for _ in range(config.num_hidden_layers)
+            FalconDecoderLayer(config, auto_quant_mode) for _ in range(config.num_hidden_layers)
         ])
 
         # Final Layer Norm
@@ -383,10 +393,11 @@ class FalconModel(nn.Module):
 
 class FalconForCausalLM(nn.Module):
 
-    def __init__(self, config: FalconConfig):
+    def __init__(self, config: FalconConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.transformer = FalconModel(config)
+        self.transformer = FalconModel(config, auto_quant_mode)
         self.lm_head = ColumnParallelLinear(
             config.hidden_size,
             config.vocab_size,

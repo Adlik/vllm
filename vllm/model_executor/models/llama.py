@@ -57,18 +57,21 @@ class LlamaMLP(nn.Module):
         intermediate_size: int,
         hidden_act: str,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.gate_up_proj = ParallelLinear.column(hidden_size,
                                                   2 * intermediate_size,
                                                   bias=False,
                                                   gather_output=False,
-                                                  quant_config=quant_config)
+                                                  quant_config=quant_config,
+                                                  auto_quant_mode=auto_quant_mode)
         self.down_proj = ParallelLinear.row(intermediate_size,
                                             hidden_size,
                                             bias=False,
                                             input_is_parallel=True,
-                                            quant_config=quant_config)
+                                            quant_config=quant_config,
+                                            auto_quant_mode=auto_quant_mode)
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
@@ -92,6 +95,7 @@ class LlamaAttention(nn.Module):
         rope_scaling: Optional[Dict[str, Any]] = None,
         max_position_embeddings: int = 8192,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -125,6 +129,7 @@ class LlamaAttention(nn.Module):
             bias=False,
             gather_output=False,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode
         )
         self.o_proj = ParallelLinear.row(
             self.total_num_heads * self.head_dim,
@@ -132,6 +137,7 @@ class LlamaAttention(nn.Module):
             bias=False,
             input_is_parallel=True,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode
         )
         self.attn = PagedAttentionWithRoPE(
             self.num_heads,
@@ -166,6 +172,7 @@ class LlamaDecoderLayer(nn.Module):
         self,
         config: LlamaConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -182,12 +189,14 @@ class LlamaDecoderLayer(nn.Module):
             rope_scaling=rope_scaling,
             max_position_embeddings=max_position_embeddings,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.mlp = LlamaMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -228,6 +237,7 @@ class LlamaModel(nn.Module):
         self,
         config: LlamaConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -240,7 +250,7 @@ class LlamaModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            LlamaDecoderLayer(config, quant_config)
+            LlamaDecoderLayer(config, quant_config, auto_quant_mode)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -277,11 +287,12 @@ class LlamaForCausalLM(nn.Module):
         self,
         config: LlamaConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.config = config
         self.quant_config = quant_config
-        self.model = LlamaModel(config, quant_config)
+        self.model = LlamaModel(config, quant_config, auto_quant_mode)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         # NOTE: The LM head is not quantized.
         self.lm_head = ParallelLinear.column(config.hidden_size,

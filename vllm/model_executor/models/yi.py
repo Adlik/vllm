@@ -57,18 +57,21 @@ class YiMLP(nn.Module):
         intermediate_size: int,
         hidden_act: str,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.gate_up_proj = ParallelLinear.column(hidden_size,
                                                   2 * intermediate_size,
                                                   bias=False,
                                                   gather_output=False,
-                                                  quant_config=quant_config)
+                                                  quant_config=quant_config,
+                                                  auto_quant_mode=auto_quant_mode)
         self.down_proj = ParallelLinear.row(intermediate_size,
                                             hidden_size,
                                             bias=False,
                                             input_is_parallel=True,
-                                            quant_config=quant_config)
+                                            quant_config=quant_config,
+                                            auto_quant_mode=auto_quant_mode)
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
                              "Only silu is supported for now.")
@@ -92,6 +95,7 @@ class YiAttention(nn.Module):
         rope_scaling: Optional[Dict[str, Any]] = None,
         max_position_embeddings: int = 8192,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
@@ -125,6 +129,7 @@ class YiAttention(nn.Module):
             bias=False,
             gather_output=False,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.o_proj = ParallelLinear.row(
             self.total_num_heads * self.head_dim,
@@ -132,6 +137,7 @@ class YiAttention(nn.Module):
             bias=False,
             input_is_parallel=True,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.attn = PagedAttentionWithRoPE(
             self.num_heads,
@@ -166,6 +172,7 @@ class YiDecoderLayer(nn.Module):
         self,
         config: YiConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -182,12 +189,14 @@ class YiDecoderLayer(nn.Module):
             rope_scaling=rope_scaling,
             max_position_embeddings=max_position_embeddings,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.mlp = YiMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             quant_config=quant_config,
+            auto_quant_mode=auto_quant_mode,
         )
         self.ln1 = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.ln2 = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -226,6 +235,7 @@ class YiModel(nn.Module):
         self,
         config: YiConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -238,7 +248,7 @@ class YiModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            YiDecoderLayer(config, quant_config)
+            YiDecoderLayer(config, quant_config, auto_quant_mode=auto_quant_mode)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -275,11 +285,12 @@ class YiForCausalLM(nn.Module):
         self,
         config: YiConfig,
         quant_config: Optional[QuantizationConfig] = None,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.config = config
         self.quant_config = quant_config
-        self.model = YiModel(config, quant_config)
+        self.model = YiModel(config, quant_config, auto_quant_mode=auto_quant_mode)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         # NOTE: The LM head is not quantized.
         self.lm_head = ParallelLinear.column(config.hidden_size,

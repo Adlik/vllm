@@ -63,6 +63,7 @@ class OPTAttention(nn.Module):
         embed_dim: int,
         num_heads: int,
         bias: bool = True,
+        auto_quant_mode: Optional[str]=None,
     ) -> None:
         super().__init__()
         self.embed_dim = embed_dim
@@ -79,12 +80,14 @@ class OPTAttention(nn.Module):
             3 * embed_dim,
             bias=bias,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.out_proj = RowParallelLinear(
             embed_dim,
             embed_dim,
             bias=bias,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.attn = PagedAttention(self.num_heads,
                                    self.head_dim,
@@ -108,7 +111,8 @@ class OPTAttention(nn.Module):
 
 class OPTDecoderLayer(nn.Module):
 
-    def __init__(self, config: OPTConfig):
+    def __init__(self, config: OPTConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         self.embed_dim = config.hidden_size
@@ -116,6 +120,7 @@ class OPTDecoderLayer(nn.Module):
             embed_dim=self.embed_dim,
             num_heads=config.num_attention_heads,
             bias=config.enable_bias,
+            auto_quant_mode=auto_quant_mode
         )
         self.do_layer_norm_before = config.do_layer_norm_before
         self.activation_fn = get_act_fn(config.activation_function)
@@ -128,12 +133,14 @@ class OPTDecoderLayer(nn.Module):
             config.ffn_dim,
             bias=config.enable_bias,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode
         )
         self.fc2 = RowParallelLinear(
             config.ffn_dim,
             self.embed_dim,
             bias=config.enable_bias,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode
         )
         self.final_layer_norm = nn.LayerNorm(
             self.embed_dim,
@@ -177,7 +184,8 @@ class OPTDecoderLayer(nn.Module):
 
 class OPTDecoder(nn.Module):
 
-    def __init__(self, config: OPTConfig):
+    def __init__(self, config: OPTConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         self.padding_idx = config.pad_token_id
@@ -219,7 +227,7 @@ class OPTDecoder(nn.Module):
             self.final_layer_norm = None
 
         self.layers = nn.ModuleList(
-            [OPTDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+            [OPTDecoderLayer(config, auto_quant_mode) for _ in range(config.num_hidden_layers)])
 
     def forward(
         self,
@@ -253,9 +261,10 @@ class OPTDecoder(nn.Module):
 
 class OPTModel(nn.Module):
 
-    def __init__(self, config: OPTConfig):
+    def __init__(self, config: OPTConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
-        self.decoder = OPTDecoder(config)
+        self.decoder = OPTDecoder(config, auto_quant_mode)
 
     def forward(
         self,
@@ -271,10 +280,11 @@ class OPTModel(nn.Module):
 
 class OPTForCausalLM(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.model = OPTModel(config)
+        self.model = OPTModel(config, auto_quant_mode)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.model.decoder.embed_tokens.weight

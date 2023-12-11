@@ -30,6 +30,7 @@ class InternLMMLP(nn.Module):
         hidden_size: int,
         intermediate_size: int,
         hidden_act: str,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.gate_up_proj = ColumnParallelLinear(
@@ -37,12 +38,14 @@ class InternLMMLP(nn.Module):
             2 * intermediate_size,
             bias=False,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.down_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=False,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         if hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {hidden_act}. "
@@ -65,6 +68,7 @@ class InternLMAttention(nn.Module):
         bias: bool,
         rope_theta: float = 10000,
         max_position_embeddings: int = 8192,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
@@ -84,12 +88,14 @@ class InternLMAttention(nn.Module):
             3 * self.total_num_heads * self.head_dim,
             bias=bias,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.o_proj = RowParallelLinear(
             self.total_num_heads * self.head_dim,
             hidden_size,
             bias=bias,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.attn = PagedAttentionWithRoPE(
             self.num_heads,
@@ -118,7 +124,8 @@ class InternLMAttention(nn.Module):
 
 class InternLMDecoderLayer(nn.Module):
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -130,11 +137,13 @@ class InternLMDecoderLayer(nn.Module):
             bias=config.bias,
             rope_theta=rope_theta,
             max_position_embeddings=max_position_embeddings,
+            auto_quant_mode=auto_quant_mode,
         )
         self.mlp = InternLMMLP(
             hidden_size=self.hidden_size,
             intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
+            auto_quant_mode=auto_quant_mode,
         )
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
@@ -171,7 +180,8 @@ class InternLMDecoderLayer(nn.Module):
 
 class InternLMModel(nn.Module):
 
-    def __init__(self, config: LlamaConfig):
+    def __init__(self, config: LlamaConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         self.padding_idx = config.pad_token_id
@@ -183,7 +193,7 @@ class InternLMModel(nn.Module):
             config.hidden_size,
         )
         self.layers = nn.ModuleList([
-            InternLMDecoderLayer(config)
+            InternLMDecoderLayer(config, auto_quant_mode)
             for _ in range(config.num_hidden_layers)
         ])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -216,10 +226,11 @@ class InternLMModel(nn.Module):
 
 class InternLMForCausalLM(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.model = InternLMModel(config)
+        self.model = InternLMModel(config, auto_quant_mode)
         vocab_size = ((config.vocab_size + 63) // 64) * 64
         self.lm_head = ColumnParallelLinear(
             config.hidden_size,

@@ -47,7 +47,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class GPTBigCodeAttention(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig):
+    def __init__(self, config: GPTBigCodeConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
@@ -68,6 +69,7 @@ class GPTBigCodeAttention(nn.Module):
                 self.hidden_size,
                 bias=True,
                 gather_output=False,
+                auto_quant_mode=auto_quant_mode,
             )
             self.c_attn_kv = nn.Linear(self.hidden_size,
                                        2 * self.kv_dim,
@@ -80,6 +82,7 @@ class GPTBigCodeAttention(nn.Module):
                 self.hidden_size + 2 * self.kv_dim,
                 bias=True,
                 gather_output=False,
+                auto_quant_mode=auto_quant_mode,
             )
 
         self.c_proj = RowParallelLinear(
@@ -87,6 +90,7 @@ class GPTBigCodeAttention(nn.Module):
             self.hidden_size,
             bias=True,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.attn = PagedAttention(self.num_heads,
                                    self.head_dim,
@@ -124,6 +128,7 @@ class GPTBigMLP(nn.Module):
         self,
         intermediate_size: int,
         config: GPTBigCodeConfig,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         hidden_size = config.hidden_size
@@ -132,12 +137,14 @@ class GPTBigMLP(nn.Module):
             intermediate_size,
             bias=True,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.c_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=True,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.act = get_act_fn(config.activation_function)
 
@@ -150,16 +157,17 @@ class GPTBigMLP(nn.Module):
 
 class GPTBigCodeBlock(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig):
+    def __init__(self, config: GPTBigCodeConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.hidden_size
         inner_dim = (config.n_inner if config.n_inner is not None else 4 *
                      hidden_size)
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.attn = GPTBigCodeAttention(config)
+        self.attn = GPTBigCodeAttention(config, auto_quant_mode)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = GPTBigMLP(inner_dim, config)
+        self.mlp = GPTBigMLP(inner_dim, config, auto_quant_mode)
 
     def forward(
         self,
@@ -189,7 +197,8 @@ class GPTBigCodeBlock(nn.Module):
 
 class GPTBigCodeModel(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig):
+    def __init__(self, config: GPTBigCodeConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         assert not config.add_cross_attention
@@ -205,7 +214,7 @@ class GPTBigCodeModel(nn.Module):
         self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList(
-            [GPTBigCodeBlock(config) for _ in range(config.num_hidden_layers)])
+            [GPTBigCodeBlock(config, auto_quant_mode) for _ in range(config.num_hidden_layers)])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -235,10 +244,11 @@ class GPTBigCodeModel(nn.Module):
 
 class GPTBigCodeForCausalLM(nn.Module):
 
-    def __init__(self, config: GPTBigCodeConfig):
+    def __init__(self, config: GPTBigCodeConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.transformer = GPTBigCodeModel(config)
+        self.transformer = GPTBigCodeModel(config, auto_quant_mode)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.wte.weight

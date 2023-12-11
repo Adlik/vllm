@@ -46,7 +46,8 @@ KVCache = Tuple[torch.Tensor, torch.Tensor]
 
 class GPT2Attention(nn.Module):
 
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config: GPT2Config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.hidden_size = config.hidden_size
         total_num_heads = config.num_attention_heads
@@ -62,12 +63,14 @@ class GPT2Attention(nn.Module):
             3 * self.hidden_size,
             bias=True,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.c_proj = RowParallelLinear(
             self.hidden_size,
             self.hidden_size,
             bias=True,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.attn = PagedAttention(self.num_heads,
                                    self.head_dim,
@@ -95,6 +98,7 @@ class GPT2MLP(nn.Module):
         self,
         intermediate_size: int,
         config: GPT2Config,
+        auto_quant_mode: Optional[str]=None,
     ):
         super().__init__()
         hidden_size = config.hidden_size
@@ -103,12 +107,14 @@ class GPT2MLP(nn.Module):
             intermediate_size,
             bias=True,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.c_proj = RowParallelLinear(
             intermediate_size,
             hidden_size,
             bias=True,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
         self.act = get_act_fn(config.activation_function)
 
@@ -121,16 +127,17 @@ class GPT2MLP(nn.Module):
 
 class GPT2Block(nn.Module):
 
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config: GPT2Config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.hidden_size
         inner_dim = (config.n_inner if config.n_inner is not None else 4 *
                      hidden_size)
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.attn = GPT2Attention(config)
+        self.attn = GPT2Attention(config, auto_quant_mode)
         self.ln_2 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = GPT2MLP(inner_dim, config)
+        self.mlp = GPT2MLP(inner_dim, config, auto_quant_mode)
 
     def forward(
         self,
@@ -160,7 +167,8 @@ class GPT2Block(nn.Module):
 
 class GPT2Model(nn.Module):
 
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config: GPT2Config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
         assert not config.add_cross_attention
@@ -177,7 +185,7 @@ class GPT2Model(nn.Module):
         self.wte = VocabParallelEmbedding(vocab_size, self.embed_dim)
         self.wpe = nn.Embedding(config.max_position_embeddings, self.embed_dim)
         self.h = nn.ModuleList(
-            [GPT2Block(config) for _ in range(config.num_hidden_layers)])
+            [GPT2Block(config, auto_quant_mode) for _ in range(config.num_hidden_layers)])
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
 
     def forward(
@@ -207,10 +215,11 @@ class GPT2Model(nn.Module):
 
 class GPT2LMHeadModel(nn.Module):
 
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config: GPT2Config,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.transformer = GPT2Model(config)
+        self.transformer = GPT2Model(config, auto_quant_mode)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.wte.weight

@@ -70,7 +70,8 @@ def _get_alibi_slopes(total_num_heads: int) -> torch.Tensor:
 
 class BloomAttention(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.total_num_heads = config.n_head
@@ -86,12 +87,14 @@ class BloomAttention(nn.Module):
             3 * self.hidden_size,
             bias=True,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.dense = RowParallelLinear(
             self.hidden_size,
             self.hidden_size,
             bias=True,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
         # Create the alibi slopes and slice them.
@@ -125,19 +128,22 @@ class BloomAttention(nn.Module):
 
 class BloomMLP(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.hidden_size
         self.dense_h_to_4h = ColumnParallelLinear(
             hidden_size,
             4 * hidden_size,
             gather_output=False,
+            auto_quant_mode=auto_quant_mode,
         )
         self.act = get_act_fn("gelu")
         self.dense_4h_to_h = RowParallelLinear(
             4 * hidden_size,
             hidden_size,
             input_is_parallel=True,
+            auto_quant_mode=auto_quant_mode,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -149,16 +155,17 @@ class BloomMLP(nn.Module):
 
 class BloomBlock(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         hidden_size = config.hidden_size
 
         self.input_layernorm = nn.LayerNorm(hidden_size,
                                             eps=config.layer_norm_epsilon)
-        self.self_attention = BloomAttention(config)
+        self.self_attention = BloomAttention(config, auto_quant_mode)
         self.post_attention_layernorm = nn.LayerNorm(
             hidden_size, eps=config.layer_norm_epsilon)
-        self.mlp = BloomMLP(config)
+        self.mlp = BloomMLP(config, auto_quant_mode)
         self.apply_residual_connection_post_layernorm = (
             config.apply_residual_connection_post_layernorm)
 
@@ -203,7 +210,8 @@ class BloomBlock(nn.Module):
 
 class BloomModel(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.embed_dim = config.hidden_size
 
@@ -217,7 +225,7 @@ class BloomModel(nn.Module):
 
         # Transformer blocks
         self.h = nn.ModuleList(
-            [BloomBlock(config) for _ in range(config.num_hidden_layers)])
+            [BloomBlock(config, auto_quant_mode) for _ in range(config.num_hidden_layers)])
 
         # Final Layer Norm
         self.ln_f = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_epsilon)
@@ -251,10 +259,11 @@ class BloomModel(nn.Module):
 
 class BloomForCausalLM(nn.Module):
 
-    def __init__(self, config: BloomConfig):
+    def __init__(self, config: BloomConfig,
+                 auto_quant_mode: Optional[str]=None,):
         super().__init__()
         self.config = config
-        self.transformer = BloomModel(config)
+        self.transformer = BloomModel(config, auto_quant_mode)
         # TODO(zhuohan): create a new weight after implementing pipeline
         #                parallelism
         self.lm_head_weight = self.transformer.word_embeddings.weight
