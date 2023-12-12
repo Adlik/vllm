@@ -51,9 +51,9 @@ class ModelConfig:
         auto_quant_mode: automatically quantizing the weight of FP16 to the
             specified type.
             None indicates no quantization.
-            "llm_int8" means LLM.int8() method that is the combination of 
+            "llm_int8" means LLM.int8() method that is the combination of
             vector-wise quantization and mixed precision decomposition.
-            "weight_int4" Indicates that the weight is automatically 
+            "weight_int4" Indicates that the weight is automatically
             converted into int4.
     """
 
@@ -195,6 +195,7 @@ class CacheConfig:
         gpu_memory_utilization: Fraction of GPU memory to use for the
             vLLM execution.
         swap_space: Size of the CPU swap space per GPU (in GiB).
+        cache_dtype: Data type for kv cache storage.
     """
 
     def __init__(
@@ -202,11 +203,16 @@ class CacheConfig:
         block_size: int,
         gpu_memory_utilization: float,
         swap_space: int,
+        cache_dtype: str,
         sliding_window: Optional[int] = None,
     ) -> None:
         self.block_size = block_size
         self.gpu_memory_utilization = gpu_memory_utilization
         self.swap_space_bytes = swap_space * _GB
+        self.cache_dtype = cache_dtype
+        if cache_dtype and 'fp8' in cache_dtype.lower():
+            # As fp8 is not a formal data type, we use torch.uint8 instead.
+            self.cache_dtype = torch.uint8
         self.sliding_window = sliding_window
         self._verify_args()
 
