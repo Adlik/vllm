@@ -33,6 +33,7 @@ class EngineArgs:
     tokenizer_revision: Optional[str] = None
     quantization: Optional[str] = None
     auto_quant_mode: Optional[str] = None
+    kv_cache_dtype: Optional[str] = None
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -184,6 +185,11 @@ class EngineArgs:
             '"weight_int4" Indicates that the weight is automatically '
             'converted into int4. '
         )
+        parser.add_argument('--kv-cache-dtype',
+                            type=str,
+                            choices=['fp8', None],
+                            default=None,
+                            help='Data type for kv cache storage.')
         return parser
 
     @classmethod
@@ -205,6 +211,7 @@ class EngineArgs:
                                    self.quantization, self.auto_quant_mode)
         cache_config = CacheConfig(
             self.block_size, self.gpu_memory_utilization, self.swap_space,
+            self.kv_cache_dtype,
             getattr(model_config.hf_config, 'sliding_window', None))
         parallel_config = ParallelConfig(self.pipeline_parallel_size,
                                          self.tensor_parallel_size,

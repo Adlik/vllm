@@ -2,6 +2,7 @@
 #include <ATen/cuda/CUDAContext.h>
 
 #include "dispatch_utils.h"
+#include "quantization/kvcache/quant_utils.cuh"
 
 #include <algorithm>
 #include <cassert>
@@ -139,12 +140,12 @@ void copy_blocks(
 
 namespace vllm {
 
-template<typename scalar_t>
+template<typename scalar_t, typename cache_t, bool enable_fp8_kv_cache>
 __global__ void reshape_and_cache_kernel(
   const scalar_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
   const scalar_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  scalar_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  scalar_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
+  cache_t* __restrict__ key_cache,            // [num_blocks, num_heads, head_size/x, block_size, x]
+  cache_t* __restrict__ value_cache,          // [num_blocks, num_heads, head_size, block_size]
   const int64_t* __restrict__ slot_mapping,   // [num_tokens]
   const int key_stride,
   const int value_stride,
@@ -181,12 +182,33 @@ __global__ void reshape_and_cache_kernel(
                                   + head_idx * head_size * block_size
                                   + head_offset * block_size
                                   + block_offset;
-    key_cache[tgt_key_idx] = key[src_key_idx];
-    value_cache[tgt_value_idx] = value[src_value_idx];
+    scalar_t tgt_key = __ldg(&key[src_key_idx]);
+    scalar_t tgt_value = __ldg(&value[src_value_idx]);
+    if constexpr (enable_fp8_kv_cache) {
+      key_cache[tgt_key_idx] = vec_conversion<uint8_t, scalar_t>(tgt_key);
+      value_cache[tgt_value_idx] = vec_conversion<uint8_t, scalar_t>(tgt_value);
+    } else {
+      key_cache[tgt_key_idx] = tgt_key;
+      value_cache[tgt_value_idx] = tgt_value;
+    }
   }
 }
 
 } // namespace vllm
+
+#define CALL_RESHAPE_AND_CACHE(KV_T, CACHE_T, ENABLE_FP8_KV_CACHE)                                \
+  vllm::reshape_and_cache_kernel<KV_T, CACHE_T, ENABLE_FP8_KV_CACHE><<<grid, block, 0, stream>>>( \
+    reinterpret_cast<KV_T*>(key.data_ptr()),                                                      \
+    reinterpret_cast<KV_T*>(value.data_ptr()),                                                    \
+    reinterpret_cast<CACHE_T*>(key_cache.data_ptr()),                                             \
+    reinterpret_cast<CACHE_T*>(value_cache.data_ptr()),                                           \
+    slot_mapping.data_ptr<int64_t>(),                                                             \
+    key_stride,                                                                                   \
+    value_stride,                                                                                 \
+    num_heads,                                                                                    \
+    head_size,                                                                                    \
+    block_size,                                                                                   \
+    x);
 
 void reshape_and_cache(
   torch::Tensor& key,           // [num_tokens, num_heads, head_size]
@@ -207,23 +229,24 @@ void reshape_and_cache(
   dim3 grid(num_tokens);
   dim3 block(std::min(num_heads * head_size, 512));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  VLLM_DISPATCH_FLOATING_TYPES(
-    key.scalar_type(),
-    "reshape_and_cache_kernel",
-    [&] {
-      vllm::reshape_and_cache_kernel<scalar_t><<<grid, block, 0, stream>>>(
-        key.data_ptr<scalar_t>(),
-        value.data_ptr<scalar_t>(),
-        key_cache.data_ptr<scalar_t>(),
-        value_cache.data_ptr<scalar_t>(),
-        slot_mapping.data_ptr<int64_t>(),
-        key_stride,
-        value_stride,
-        num_heads,
-        head_size,
-        block_size,
-        x);
-    });
+  bool enable_fp8_kv_cache = key_cache.scalar_type() == at::ScalarType::Byte;
+  if (enable_fp8_kv_cache) {
+    if (key.dtype() == at::ScalarType::Float) {
+      CALL_RESHAPE_AND_CACHE(float, uint8_t, true);
+    } else if (key.dtype() == at::ScalarType::Half) {
+      CALL_RESHAPE_AND_CACHE(uint16_t, uint8_t, true);
+    } else if (key.dtype() == at::ScalarType::BFloat16) {
+      CALL_RESHAPE_AND_CACHE(__nv_bfloat16, uint8_t, true);
+    }
+  } else {
+    if (key.dtype() == at::ScalarType::Float) {
+      CALL_RESHAPE_AND_CACHE(float, float, false);
+    } else if (key.dtype() == at::ScalarType::Half) {
+      CALL_RESHAPE_AND_CACHE(uint16_t, uint16_t, false);
+    } else if (key.dtype() == at::ScalarType::BFloat16) {
+      CALL_RESHAPE_AND_CACHE(__nv_bfloat16, __nv_bfloat16, false);
+    }
+  }
 }
 
 namespace vllm {
@@ -251,12 +274,12 @@ __global__ void gather_cached_kv_kernel(
     for (int i = threadIdx.x; i < num_tokens; i += blockDim.x) {
       const int tgt_key_idx = token_idx * key_stride + i;
       const int tgt_value_idx = token_idx * value_stride + i;
-  
+
       const int head_idx = i / head_size;
       const int head_offset = i % head_size;
       const int x_idx = head_offset / x;  // the offset of the [head_size/x] dimension
       const int x_offset = head_offset % x;
-  
+
       const int src_key_idx = block_idx * num_heads * (head_size / x) * block_size * x
                               + head_idx * (head_size / x) * block_size * x
                               + x_idx * block_size * x

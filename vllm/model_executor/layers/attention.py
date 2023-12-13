@@ -159,6 +159,9 @@ class PagedAttention(nn.Module):
         # For context len > 8192, use V2 kernel to avoid shared memory shortage.
         use_v1 = input_metadata.max_context_len <= 8192 and (
             max_num_partitions == 1 or num_seqs * num_heads > 512)
+
+        enable_fp8_kv_cache = key_cache.dtype == torch.uint8
+
         if use_v1:
             # Run PagedAttention V1.
             attention_ops.paged_attention_v1(
@@ -173,6 +176,7 @@ class PagedAttention(nn.Module):
                 block_size,
                 input_metadata.max_context_len,
                 alibi_slopes,
+                enable_fp8_kv_cache,
             )
         else:
             # Run PagedAttention V2.
@@ -203,6 +207,7 @@ class PagedAttention(nn.Module):
                 block_size,
                 input_metadata.max_context_len,
                 alibi_slopes,
+                enable_fp8_kv_cache,
             )
 
     def forward(
