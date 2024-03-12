@@ -402,9 +402,17 @@ class LLMEngine:
     ):
         if prompt_token_ids is None:
             assert prompt is not None
+            max_length = os.environ.get('VLLM_TOKENIZER_INPUT_MAX_LEN')
+            if max_length is not None:
+                max_length = int(max_length)
+            truncation = os.environ.get('VLLM_TOKENIZER_TRUNCATION')
+            if truncation is not None:
+                truncation = bool(truncation)
             prompt_token_ids = self.tokenizer.encode(request_id=request_id,
                                                      prompt=prompt,
-                                                     lora_request=lora_request)
+                                                     lora_request=lora_request,
+                                                     max_length=max_length,
+                                                     truncation=truncation)
         return prompt_token_ids
 
     def add_request(
