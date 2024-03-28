@@ -62,13 +62,18 @@ async def generate(request: Request) -> Response:
             ret = {
                 "text": [output.text for output in request_output.outputs],
                 "input_tokens":
-                    request_output.prompt_token_ids,
+                request_output.prompt_token_ids,
                 "output_tokens":
-                    [output.token_ids for output in request_output.outputs],
+                [output.token_ids for output in request_output.outputs],
             }
             serving_idx = os.environ.get("VLLM_SERVING_IDX")
             if serving_idx:
                 ret["serving_idx"] = serving_idx
+            logprobs = os.environ.get("VLLM_RETURN_LOGPROBS")
+            if logprobs:
+                ret["logprobs"] = [
+                    output.logprobs for output in request_output.outputs
+                ]
             yield (json.dumps(ret) + "\0").encode("utf-8")
 
     if stream:
@@ -92,6 +97,11 @@ async def generate(request: Request) -> Response:
     serving_idx = os.environ.get("VLLM_SERVING_IDX")
     if serving_idx:
         ret["serving_idx"] = serving_idx
+    logprobs = os.environ.get("VLLM_RETURN_LOGPROBS")
+    if logprobs:
+        ret["logprobs"] = [
+            output.logprobs for output in request_output.outputs
+        ]
     return JSONResponse(ret)
 
 
