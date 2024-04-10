@@ -38,6 +38,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # copy input files
 COPY csrc csrc
 COPY setup.py setup.py
+COPY cmake cmake
+COPY CMakeLists.txt CMakeLists.txt
 COPY requirements.txt requirements.txt
 COPY pyproject.toml pyproject.toml
 COPY vllm/__init__.py vllm/__init__.py
@@ -58,25 +60,26 @@ RUN python3 setup.py build_ext --inplace
 #################### EXTENSION Build IMAGE ####################
 
 
-#################### TEST IMAGE ####################
-# image to run unit testing suite
-FROM dev AS test
+#################### FLASH_ATTENTION Build IMAGE ####################
+FROM dev as flash-attn-builder
+# max jobs used for build
+ARG max_jobs=2
+ENV MAX_JOBS=${max_jobs}
+# flash attention version
+ARG flash_attn_version=v2.5.6
+ENV FLASH_ATTN_VERSION=${flash_attn_version}
 
-# copy pytorch extensions separately to avoid having to rebuild
-# when python code changes
-WORKDIR /vllm-workspace
-# ADD is used to preserve directory structure
-ADD . /vllm-workspace/
-COPY --from=build /workspace/vllm/*.so /vllm-workspace/vllm/
-# ignore build dependencies installation because we are using pre-complied extensions
-RUN rm pyproject.toml
-RUN --mount=type=cache,target=/root/.cache/pip VLLM_USE_PRECOMPILED=1 pip install . --verbose
-#################### TEST IMAGE ####################
+WORKDIR /usr/src/flash-attention-v2
+
+# Download the wheel or build it if a pre-compiled release doesn't exist
+RUN pip --verbose wheel flash-attn==${FLASH_ATTN_VERSION} \
+   --no-build-isolation --no-deps --no-cache-dir
+#################### FLASH_ATTENTION Build IMAGE ####################
 
 
 #################### RUNTIME BASE IMAGE ####################
 # We used base cuda image because pytorch installs its own cuda libraries.
-# However cupy depends on cuda libraries so we had to switch to the runtime image
+# However pynccl depends on cuda libraries so we had to switch to the runtime image
 # In the future it would be nice to get a container with pytorch and cuda without duplicating cuda
 FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS vllm-base
 
@@ -88,6 +91,10 @@ WORKDIR /workspace
 COPY requirements.txt requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
+
+# Install flash attention (from pre-built wheel)
+RUN --mount=type=bind,from=flash-attn-builder,src=/usr/src/flash-attention-v2,target=/usr/src/flash-attention-v2 \
+    pip install /usr/src/flash-attention-v2/*.whl --no-cache-dir
 #################### RUNTIME BASE IMAGE ####################
 
 
@@ -96,10 +103,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 FROM vllm-base AS vllm-openai
 # install additional dependencies for openai api server
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install accelerate
+    pip install accelerate hf_transfer modelscope
 
 COPY --from=build /workspace/vllm/*.so /workspace/vllm/
 COPY vllm vllm
 
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
+ENV PYTHONPATH "${PYTHONPATH}:/workspace"
 #################### OPENAI API SERVER ####################
