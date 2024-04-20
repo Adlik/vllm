@@ -175,6 +175,9 @@ if(VLLM_GPU_LANG STREQUAL "CUDA")
   list(APPEND VLLM_EXT_SRC
     "csrc/quantization/awq/gemm_kernels.cu"
     "csrc/quantization/marlin/marlin_cuda_kernel.cu"
+    "csrc/quantization/autoquant/int4_fp16_gemm_kernels.cu"
+    "csrc/quantization/autoquant/format.cu"
+    "csrc/quantization/autoquant/gemm_s4_f16.cu"
     "csrc/custom_all_reduce.cu")
 endif()
 

@@ -2,6 +2,7 @@
 import copy
 import glob
 import os
+import gc
 from abc import ABC, abstractmethod
 from typing import (TYPE_CHECKING, Any, Dict, Generator, List, Optional, Tuple,
                     Type)
@@ -23,6 +24,8 @@ from vllm.model_executor.model_loader.weight_utils import (
     get_quant_config, initialize_dummy_weights, np_cache_weights_iterator,
     pt_weights_iterator, safetensors_weights_iterator)
 from vllm.model_executor.models.llava import LlavaForConditionalGeneration
+from vllm.model_executor.layers.quantization.auto_quant import \
+    (AutoQuantLinearMethod, replace_quant_params)
 
 if TYPE_CHECKING:
     from vllm.model_executor.layers.linear import LinearMethodBase
@@ -82,10 +85,10 @@ def _get_model_initialization_kwargs(
 def _initialize_model(
         model_config: ModelConfig, load_config: LoadConfig,
         lora_config: Optional[LoRAConfig],
-        vision_language_config: Optional[VisionLanguageConfig]) -> nn.Module:
+        vision_language_config: Optional[VisionLanguageConfig],
+        linear_method: Optional["LinearMethodBase"]) -> nn.Module:
     """Initialize a model with the given configurations."""
     model_class = get_model_architecture(model_config)[0]
-    linear_method = _get_linear_method(model_config, load_config)
 
     return model_class(config=model_config.hf_config,
                        linear_method=linear_method,
@@ -218,9 +221,17 @@ class DefaultModelLoader(BaseModelLoader):
                    parallel_config: ParallelConfig,
                    scheduler_config: SchedulerConfig) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            linear_method = _get_linear_method(model_config, self.load_config)
+            if isinstance(linear_method, AutoQuantLinearMethod) and \
+                linear_method.quant_config.from_float:
                 model = _initialize_model(model_config, self.load_config,
-                                          lora_config, vision_language_config)
+                                          lora_config, vision_language_config,
+                                          linear_method)
+            else:
+                with torch.device(device_config.device):
+                    model = _initialize_model(model_config, self.load_config,
+                                              lora_config, vision_language_config,
+                                              linear_method)
             model.load_weights(
                 self._get_weights_iterator(model_config.model,
                                            model_config.revision,
@@ -228,6 +239,19 @@ class DefaultModelLoader(BaseModelLoader):
                                                model,
                                                "fall_back_to_pt_during_load",
                                                True)), )
+            if isinstance(linear_method, AutoQuantLinearMethod):
+                replace_quant_params(model,
+                                    quant_config=linear_method.quant_config,
+                                    modules_to_not_convert="lm_head")
+                torch.cuda.synchronize()
+                if linear_method.quant_config.from_float:
+                    model = model.cuda()
+                gc.collect()
+                torch.cuda.empty_cache()
+                print("Memory allocated:",
+                    torch.cuda.memory_allocated(torch.cuda.current_device()))
+                print("Memory reserved:",
+                    torch.cuda.memory_reserved(torch.cuda.current_device()))
         return model.eval()
 
 
@@ -247,12 +271,33 @@ class DummyModelLoader(BaseModelLoader):
                    parallel_config: ParallelConfig,
                    scheduler_config: SchedulerConfig) -> nn.Module:
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            linear_method = _get_linear_method(model_config, self.load_config)
+            if isinstance(linear_method, AutoQuantLinearMethod) and \
+                linear_method.quant_config.from_float:
                 model = _initialize_model(model_config, self.load_config,
-                                          lora_config, vision_language_config)
+                                          lora_config, vision_language_config,
+                                          linear_method)
+            else:
+                with torch.device(device_config.device):
+                    model = _initialize_model(model_config, self.load_config,
+                                              lora_config, vision_language_config,
+                                              linear_method)
             # NOTE(woosuk): For accurate performance evaluation, we assign
             # random values to the weights.
             initialize_dummy_weights(model)
+            if isinstance(linear_method, AutoQuantLinearMethod):
+                replace_quant_params(model,
+                                    quant_config=linear_method.quant_config,
+                                    modules_to_not_convert="lm_head")
+                torch.cuda.synchronize()
+                if linear_method.quant_config.from_float:
+                    model = model.cuda()
+                gc.collect()
+                torch.cuda.empty_cache()
+                print("Memory allocated:",
+                    torch.cuda.memory_allocated(torch.cuda.current_device()))
+                print("Memory reserved:",
+                    torch.cuda.memory_reserved(torch.cuda.current_device()))
         return model.eval()
 
 
@@ -289,11 +334,31 @@ class TensorizerLoader(BaseModelLoader):
         be slower than loading a tensorizer-serialized model.
         """
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            linear_method = _get_linear_method(model_config, self.load_config)
+            if isinstance(linear_method, AutoQuantLinearMethod) and \
+                linear_method.quant_config.from_float:
                 model = _initialize_model(model_config, self.load_config,
-                                          lora_config, vision_language_config)
-
+                                          lora_config, vision_language_config,
+                                          linear_method)
+            else:
+                with torch.device(device_config.device):
+                    model = _initialize_model(model_config, self.load_config,
+                                              lora_config, vision_language_config,
+                                              linear_method)
             model.load_weights(self._get_weights_iterator())
+            if isinstance(linear_method, AutoQuantLinearMethod):
+                replace_quant_params(model,
+                                    quant_config=linear_method.quant_config,
+                                    modules_to_not_convert="lm_head")
+                torch.cuda.synchronize()
+                if linear_method.quant_config.from_float:
+                    model = model.cuda()
+                gc.collect()
+                torch.cuda.empty_cache()
+                print("Memory allocated:",
+                    torch.cuda.memory_allocated(torch.cuda.current_device()))
+                print("Memory reserved:",
+                    torch.cuda.memory_reserved(torch.cuda.current_device()))
         return model.eval()
 
     def _load_model_serialized(
@@ -306,10 +371,10 @@ class TensorizerLoader(BaseModelLoader):
         See the examples/tensorize_vllm_model.py example "
         script for serializing vLLM models."""
         with set_default_torch_dtype(model_config.dtype):
-            with torch.device(device_config.device):
+            linear_method = _get_linear_method(model_config, self.load_config)
+            if isinstance(linear_method, AutoQuantLinearMethod) and \
+                linear_method.quant_config.from_float:
                 model_class = get_model_architecture(model_config)[0]
-                linear_method = _get_linear_method(model_config,
-                                                   self.load_config)
                 extra_kwargs = _get_model_initialization_kwargs(
                     model_class, lora_config, vision_language_config)
                 extra_kwargs["linear_method"] = linear_method
@@ -320,6 +385,32 @@ class TensorizerLoader(BaseModelLoader):
                 tensorizer_config.dtype = model_config.dtype
 
                 model = load_with_tensorizer(tensorizer_config, **extra_kwargs)
+            else:
+                with torch.device(device_config.device):
+                    model_class = get_model_architecture(model_config)[0]
+                    extra_kwargs = _get_model_initialization_kwargs(
+                        model_class, lora_config, vision_language_config)
+                    extra_kwargs["linear_method"] = linear_method
+
+                    tensorizer_config = copy.copy(self.tensorizer_config)
+                    tensorizer_config.model_class = model_class
+                    tensorizer_config.hf_config = model_config.hf_config
+                    tensorizer_config.dtype = model_config.dtype
+
+                    model = load_with_tensorizer(tensorizer_config, **extra_kwargs)
+            if isinstance(linear_method, AutoQuantLinearMethod):
+                replace_quant_params(model,
+                                    quant_config=linear_method.quant_config,
+                                    modules_to_not_convert="lm_head")
+                torch.cuda.synchronize()
+                if linear_method.quant_config.from_float:
+                    model = model.cuda()
+                gc.collect()
+                torch.cuda.empty_cache()
+                print("Memory allocated:",
+                    torch.cuda.memory_allocated(torch.cuda.current_device()))
+                print("Memory reserved:",
+                    torch.cuda.memory_reserved(torch.cuda.current_device()))
         return model.eval()
 
     def load_model(self, *, model_config: ModelConfig,
