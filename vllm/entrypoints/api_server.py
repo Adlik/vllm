@@ -8,6 +8,7 @@ change `vllm/entrypoints/openai/api_server.py` instead.
 
 import argparse
 import json
+import os
 import ssl
 from typing import AsyncGenerator
 
@@ -42,22 +43,36 @@ async def generate(request: Request) -> Response:
     - other fields: the sampling parameters (See `SamplingParams` for details).
     """
     request_dict = await request.json()
-    prompt = request_dict.pop("prompt")
+    prompt = None
+    prompt_token_ids = None
+    if "prompt" in request_dict:
+        prompt = request_dict.pop("prompt")
+    elif "prompt_token_ids" in request_dict:
+        prompt_token_ids = request_dict.pop("prompt_token_ids")
     stream = request_dict.pop("stream", False)
     sampling_params = SamplingParams(**request_dict)
     request_id = random_uuid()
 
     assert engine is not None
-    results_generator = engine.generate(prompt, sampling_params, request_id)
+    results_generator = engine.generate(prompt,
+                                        sampling_params,
+                                        request_id,
+                                        prompt_token_ids)
 
     # Streaming case
     async def stream_results() -> AsyncGenerator[bytes, None]:
         async for request_output in results_generator:
-            prompt = request_output.prompt
-            text_outputs = [
-                prompt + output.text for output in request_output.outputs
-            ]
-            ret = {"text": text_outputs}
+            ret = {
+                "text":
+                    [output.text for output in request_output.outputs],
+                "input_tokens":
+                    request_output.prompt_token_ids,
+                "output_tokens":
+                    [output.token_ids for output in request_output.outputs],
+            }
+            serving_idx = os.environ.get("VLLM_SERVING_IDX")
+            if serving_idx:
+                ret["serving_idx"] = serving_idx
             yield (json.dumps(ret) + "\0").encode("utf-8")
 
     if stream:
@@ -73,9 +88,14 @@ async def generate(request: Request) -> Response:
         final_output = request_output
 
     assert final_output is not None
-    prompt = final_output.prompt
-    text_outputs = [prompt + output.text for output in final_output.outputs]
-    ret = {"text": text_outputs}
+    ret = {
+        "text": [output.text for output in final_output.outputs],
+        "input_tokens": final_output.prompt_token_ids,
+        "output_tokens": [output.token_ids for output in final_output.outputs],
+    }
+    serving_idx = os.environ.get("VLLM_SERVING_IDX")
+    if serving_idx:
+        ret["serving_idx"] = serving_idx
     return JSONResponse(ret)
 
 
