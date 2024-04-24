@@ -26,8 +26,6 @@ docker run -it --gpus all \
 ```bash
 # Export env params
 export VLLM_SERVING_IDX="vllm-serving"
-export VLLM_TOKENIZER_INPUT_MAX_LEN=8192
-export VLLM_TOKENIZER_TRUNCATION=True
 
 # Service (int4 quantization)
 python3 -m vllm.entrypoints.api_server --model /model --tensor-parallel-size 2 --host 0.0.0.0 --port 48000 --trust-remote-code --max-num-batched-tokens 16384 --max-model-len 16384 --dtype half --quantization autoquant --max-num-seqs 16 --enforce-eager
