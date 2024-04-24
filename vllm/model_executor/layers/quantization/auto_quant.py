@@ -3,7 +3,6 @@ from typing import Any, Dict, List, NamedTuple, TypeVar, Optional
 import numpy as np
 import torch
 from torch.nn.parameter import Parameter
-import bitsandbytes as bnb
 
 from vllm._C import ops
 from vllm.model_executor.layers.linear import (LinearMethodBase,
