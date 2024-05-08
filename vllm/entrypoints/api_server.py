@@ -53,6 +53,46 @@ async def generate(request: Request) -> Response:
     sampling_params = SamplingParams(**request_dict)
     request_id = random_uuid()
 
+    service_busy = engine.is_service_busy()
+    result_str = "  Busy  " if service_busy else "Not Busy"
+    print("---------- -------------- ----------")
+    print(f"---------- >> {result_str} << ----------")
+    print("---------- -------------- ----------")
+
+    # Service busy response
+    async def busy_results() -> AsyncGenerator[bytes, None]:
+        serving_idx = "[Busy]" + os.environ.get("VLLM_SERVING_IDX")
+
+        ret = {
+            "text": ["模型推理服务繁忙，请稍后再试。"],
+            "input_tokens": [],
+            "output_tokens": [[]],
+            "serving_idx": serving_idx,
+        }
+        yield (json.dumps(ret) + "\0").encode("utf-8")
+
+        ret_end = {
+            "text": ["模型推理服务繁忙，请稍后再试。"],
+            "input_tokens": [],
+            "output_tokens": [[]],
+            "serving_idx": serving_idx,
+            "busy": True,
+        }
+        yield (json.dumps(ret_end) + "\0").encode("utf-8")
+
+    if service_busy:
+        if stream:
+            return StreamingResponse(busy_results())
+
+        serving_idx = "[Busy]" + os.environ.get("VLLM_SERVING_IDX")
+        ret = {
+            "text": ["模型推理服务繁忙，请稍后再试。"],
+            "input_tokens": [],
+            "output_tokens": [[]],
+            "serving_idx": serving_idx,
+        }
+        return JSONResponse(ret)
+
     assert engine is not None
     results_generator = engine.generate(prompt,
                                         sampling_params,

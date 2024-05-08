@@ -425,6 +425,11 @@ class AsyncLLMEngine:
                 self._engine_class).remote
         return engine_class(*args, **kwargs)
 
+    def is_service_busy(self) -> bool:
+        """Check whether the length of running seqs is larger than max_num_seqs"""
+
+        return self.engine.is_service_busy()
+
     async def engine_step(self) -> bool:
         """Kick the engine to process the waiting requests.
 
