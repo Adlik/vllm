@@ -321,6 +321,17 @@ class LLMEngine:
                                                      lora_request=lora_request)
         return prompt_token_ids
 
+    def is_service_busy(self) -> bool:
+        """Check whether the length of running seqs is larger than max_num_seqs"""
+
+        unfinished_req_num = len(self.scheduler.running) + len(self.scheduler.waiting)
+
+        print("---------- -------------- ----------")
+        print(f"---------- Unfinished:  {unfinished_req_num} ----------")
+        print(f"---------- Max seq num: {self.scheduler_config.max_num_seqs} ----------")
+
+        return unfinished_req_num >= self.scheduler_config.max_num_seqs
+
     def add_request(
         self,
         request_id: str,

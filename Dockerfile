@@ -13,6 +13,8 @@ RUN apt-get update -y \
 # this won't be needed for future versions of this docker image
 # or future versions of triton.
 RUN ldconfig /usr/local/cuda-12.1/compat/
+RUN mkdir -p /root/.config/vllm/nccl/cu12/
+COPY cu12-libnccl.so.2.18.1 /root/.config/vllm/nccl/cu12/libnccl.so.2.18.1
 
 WORKDIR /workspace
 
@@ -58,7 +60,7 @@ COPY pyproject.toml pyproject.toml
 COPY vllm vllm
 
 # max jobs used by Ninja to build extensions
-ARG max_jobs=2
+ARG max_jobs=4
 ENV MAX_JOBS=${max_jobs}
 # number of threads used by nvcc
 ARG nvcc_threads=8
@@ -91,8 +93,7 @@ ENV FLASH_ATTN_VERSION=${flash_attn_version}
 WORKDIR /usr/src/flash-attention-v2
 
 # Download the wheel or build it if a pre-compiled release doesn't exist
-RUN pip --verbose wheel flash-attn==${FLASH_ATTN_VERSION} \
-    --no-build-isolation --no-deps --no-cache-dir
+ADD flash_attn-2.5.6+cu122torch2.2cxx11abiFALSE-cp310-cp310-linux_x86_64.whl /usr/src/flash-attention-v2
 
 #################### FLASH_ATTENTION Build IMAGE ####################
 
@@ -102,7 +103,13 @@ FROM nvidia/cuda:12.1.0-base-ubuntu22.04 AS vllm-base
 WORKDIR /vllm-workspace
 
 RUN apt-get update -y \
-    && apt-get install -y python3-pip git vim
+    && apt-get install -y python3-pip git openssh-server vim tmux screen htop
+
+RUN ssh-keygen -t rsa -b 2048 -f "$HOME/.ssh/id_rsa" -N "" && \
+    echo "Host *" >> ~/.ssh/config && \
+    echo "    ServerAliveInterval 10" >> ~/.ssh/config && \
+    echo "    HostKeyAlgorithms +ssh-rsa" >> ~/.ssh/config && \
+    echo "    PubkeyAcceptedKeyTypes +ssh-rsa" >> ~/.ssh/config
 
 # Workaround for https://github.com/openai/triton/issues/2507 and
 # https://github.com/pytorch/pytorch/issues/107960 -- hopefully
@@ -111,6 +118,8 @@ RUN apt-get update -y \
 RUN ldconfig /usr/local/cuda-12.1/compat/
 
 # install vllm wheel first, so that torch etc will be installed
+RUN mkdir -p /root/.config/vllm/nccl/cu12/
+COPY cu12-libnccl.so.2.18.1 /root/.config/vllm/nccl/cu12/libnccl.so.2.18.1
 RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist \
     --mount=type=cache,target=/root/.cache/pip \
     pip install dist/*.whl --verbose
@@ -120,36 +129,13 @@ RUN --mount=type=bind,from=flash-attn-builder,src=/usr/src/flash-attention-v2,ta
     pip install /usr/src/flash-attention-v2/*.whl --no-cache-dir
 #################### vLLM installation IMAGE ####################
 
-
-#################### TEST IMAGE ####################
-# image to run unit testing suite
-# note that this uses vllm installed by `pip`
-FROM vllm-base AS test
-
-ADD . /vllm-workspace/
-
-# install development dependencies (for testing)
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements-dev.txt
-
-# doc requires source code
-# we hide them inside `test_docs/` , so that this source code
-# will not be imported by other tests
-RUN mkdir test_docs
-RUN mv docs test_docs/
-RUN mv vllm test_docs/
-
-#################### TEST IMAGE ####################
-
 #################### OPENAI API SERVER ####################
 # openai api server alternative
 FROM vllm-base AS vllm-openai
 
 # install additional dependencies for openai api server
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install accelerate hf_transfer modelscope
+    pip install accelerate hf_transfer modelscope transformers sentencepiece gunicorn flask flask_cors tritonclient[all] confluent_kafka tiktoken transformers_stream_generator einops
 
 ENV VLLM_USAGE_SOURCE production-docker-image
-
-ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]
 #################### OPENAI API SERVER ####################
