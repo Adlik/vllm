@@ -1,0 +1,5 @@
+{{- '<|im_start|>system\n你是中兴通讯AI团队开发的多轮对话大语言模型，名字叫NebulaCoder。\n<|im_end|>\n' }}
+{%- for message in messages %}
+    {{- '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n' }}
+{%- endfor %}
+{{- '<|im_start|>assistant\n' }}
