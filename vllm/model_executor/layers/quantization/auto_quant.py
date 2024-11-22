@@ -8,6 +8,7 @@ from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase
 from vllm.model_executor.layers.quantization.base_config import (
     QuantizationConfig)
 from vllm.model_executor.utils import set_weight_attrs
+from vllm.model_executor.layers.quantization.utils import replace_parameter
 
 
 class AutoQuantConfig(QuantizationConfig):
@@ -192,8 +193,11 @@ class AutoQuantLinearMethod(LinearMethodBase):
         else:
             qweight, scales_zeros = convert_s4(layer.qweight, layer.qzeros,
                                                 layer.scales)
-            layer.qweight = Parameter(qweight, requires_grad=False)
+            #layer.qweight = Parameter(qweight, requires_grad=False)
+            replace_parameter(layer, "qweight", qweight)
             layer.scales_zeros = Parameter(scales_zeros, requires_grad=False)
+            del layer.qzeros
+            del layer.scales
 
     def apply(self,
               layer: torch.nn.Module,
