@@ -228,6 +228,22 @@ std::vector<torch::Tensor> cutlass_sparse_compress(torch::Tensor const& a);
 void scaled_fp4_quant(torch::Tensor& output, torch::Tensor const& input,
                       torch::Tensor& output_scale,
                       torch::Tensor const& input_scale);
+
+torch::Tensor autoquant_s4_f16_gemm(
+  torch::Tensor _in_feats,
+  torch::Tensor _kernel,
+  torch::Tensor _scales_zeros);
+
+void autoquant_convert_s4_k_m8(
+  torch::Tensor _weight_dest,
+  torch::Tensor _quant_scales_zeros_dest,
+  torch::Tensor _workspace,
+  torch::Tensor _quant_weight_src,
+  torch::Tensor _quant_scales,
+  torch::Tensor _quant_zeros,
+  int64_t m,
+  int64_t k,
+  int64_t group_size);
 #endif
 
 void static_scaled_int8_quant(torch::Tensor& out, torch::Tensor const& input,

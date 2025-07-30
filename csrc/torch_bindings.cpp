@@ -485,6 +485,26 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, ops) {
       "int pad_slot_id) -> ()");
   ops.impl("causal_conv1d_fwd", torch::kCUDA, &causal_conv1d_fwd);
 
+  ops.def(
+      "autoquant_s4_f16_gemm(Tensor _in_feats,"
+      "Tensor _kernel,"
+      "Tensor _scales_zeros) -> Tensor",
+      {stride_tag});
+  ops.impl("autoquant_s4_f16_gemm", torch::kCUDA, &autoquant_s4_f16_gemm);
+
+  ops.def(
+      "autoquant_convert_s4_k_m8(Tensor _weight_dest,"
+      "Tensor _quant_scales_zeros_dest,"
+      "Tensor _workspace,"
+      "Tensor _quant_weight_src,"
+      "Tensor _quant_scales,"
+      "Tensor _quant_zeros,"
+      "int m,"
+      "int k,"
+      "int group_size) -> ()",
+      {stride_tag});
+  ops.impl("autoquant_convert_s4_k_m8", torch::kCUDA, &autoquant_convert_s4_k_m8);
+
   // Compute NVFP4 block quantized tensor.
   ops.def(
       "scaled_fp4_quant(Tensor! output, Tensor input,"

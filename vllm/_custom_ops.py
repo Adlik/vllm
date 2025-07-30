@@ -257,6 +257,37 @@ def awq_gemm(input: torch.Tensor, qweight: torch.Tensor, qzeros: torch.Tensor,
     return torch.ops._C.awq_gemm(input, qweight, qzeros, scales, split_k_iters)
 
 
+#autoquant
+def autoquant_convert_s4_k_m8(weight_dest: torch.Tensor,
+                              quant_scales_zeros_dest: torch.Tensor,
+                              workspace: torch.Tensor,
+                              quant_weight_src: torch.Tensor,
+                              quant_scales: torch.Tensor,
+                              quant_zeros: torch.Tensor,
+                              m: int,
+                              k: int,
+                              group_size: int) -> torch.Tensor:
+    return torch.ops._C.autoquant_convert_s4_k_m8(weight_dest, quant_scales_zeros_dest,
+                                       workspace, quant_weight_src,
+                                       quant_scales, quant_zeros, m, k,
+                                       group_size)
+
+
+def autoquant_s4_f16_gemm(in_feats: torch.Tensor, kernel: torch.Tensor,
+                          scales_zeros: torch.Tensor) -> torch.Tensor:
+    return torch.ops._C.autoquant_s4_f16_gemm(in_feats, kernel, scales_zeros)
+
+
+if hasattr(torch.ops._C, "autoquant_s4_f16_gemm"):
+    
+    @register_fake("_C::autoquant_s4_f16_gemm")
+    def _autoquant_s4_f16_gemm_fake(in_feats: torch.Tensor, kernel: torch.Tensor,
+                                    scales_zeros: torch.Tensor) -> torch.Tensor:
+        return torch.empty((in_feats.size(0), kernel.size(1) * 8),
+                           dtype=in_feats.dtype,
+                           device=in_feats.device)
+
+
 # gptq
 def gptq_gemm(a: torch.Tensor, b_q_weight: torch.Tensor,
               b_gptq_qzeros: torch.Tensor, b_gptq_scales: torch.Tensor,

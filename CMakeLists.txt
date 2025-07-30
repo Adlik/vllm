@@ -243,6 +243,9 @@ set(VLLM_EXT_SRC
   "csrc/quantization/gguf/gguf_kernel.cu"
   "csrc/cuda_utils_kernels.cu"
   "csrc/prepare_inputs/advance_step.cu"
+  "csrc/quantization/autoquant/int4_fp16_gemm_kernels.cu"
+  "csrc/quantization/autoquant/format.cu"
+  "csrc/quantization/autoquant/gemm_s4_f16.cu"
   "csrc/custom_all_reduce.cu"
   "csrc/torch_bindings.cpp")
 
