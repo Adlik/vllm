@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional, NamedTuple
 
 import torch
 from torch.nn.parameter import Parameter
+from vllm.model_executor.parameter import (GroupQuantScaleParameter,
+                                           PackedvLLMParameter)
 
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, UnquantizedLinearMethod
@@ -123,6 +125,13 @@ class AutoQuantLinearMethod(LinearMethodBase):
                 "tensor parallel size.")
 
         output_size_per_partition = sum(output_partition_sizes)
+        weight_loader = extra_weight_attrs.get("weight_loader")
+        
+        if self.quant_config.group_size != -1:
+            group_size = self.quant_config.group_size
+        else:
+            group_size = input_size
+
         if output_size_per_partition % self.quant_config.pack_factor != 0:
             raise ValueError(
                 "The output size is not aligned with the quantized "
@@ -131,55 +140,50 @@ class AutoQuantLinearMethod(LinearMethodBase):
         if self.quant_config.quant_mode == "weight_only" and \
                 not self.quant_config.from_float:
             layer.process_after_load = True
-            qweight = Parameter(
-                torch.empty(
+            qweight = PackedvLLMParameter(
+                data=torch.empty(
                     input_size_per_partition,
                     output_size_per_partition // self.quant_config.pack_factor,
                     dtype=torch.int32,
                 ),
-                requires_grad=False,
-            )
-            set_weight_attrs(
-                qweight, {
-                    "input_dim": 0,
-                    "output_dim": 1,
-                    "packed_dim": 1,
-                    "pack_factor": self.quant_config.pack_factor,
-                })
-            qzeros = Parameter(
-                torch.empty(
-                    input_size_per_partition // self.quant_config.group_size,
+                input_dim=0,
+                output_dim=1,
+                packed_dim=1,
+                packed_factor=self.quant_config.pack_factor,
+                weight_loader=weight_loader)
+
+            num_groups = input_size_per_partition // group_size
+
+            qzeros = PackedvLLMParameter(
+                data=torch.empty(
+                    num_groups,
                     output_size_per_partition // self.quant_config.pack_factor,
                     dtype=torch.int32,
                 ),
-                requires_grad=False,
-            )
-            set_weight_attrs(
-                qzeros, {
-                    "input_dim": 0,
-                    "output_dim": 1,
-                    "packed_dim": 1,
-                    "pack_factor": self.quant_config.pack_factor,
-                })
-            scales = Parameter(
-                torch.empty(
-                    input_size_per_partition // self.quant_config.group_size,
+                input_dim=0,
+                output_dim=1,
+                packed_dim=1,
+                packed_factor=self.quant_config.pack_factor,
+                weight_loader=weight_loader)
+
+            scales = GroupQuantScaleParameter(
+                data=torch.empty(
+                    num_groups,
                     output_size_per_partition,
                     dtype=params_dtype,
                 ),
-                requires_grad=False,
-            )
-            set_weight_attrs(scales, {
-                "input_dim": 0,
-                "output_dim": 1,
-            })
+                input_dim=0,
+                output_dim=1,
+                weight_loader=weight_loader)
     
             layer.register_parameter("qweight", qweight)
-            set_weight_attrs(qweight, extra_weight_attrs)
             layer.register_parameter("qzeros", qzeros)
-            set_weight_attrs(qzeros, extra_weight_attrs)
             layer.register_parameter("scales", scales)
-            set_weight_attrs(scales, extra_weight_attrs)
+            
+            layer.input_size_per_partition = input_size_per_partition
+            layer.output_size_per_partition = output_size_per_partition
+            layer.num_groups = num_groups
+
         else:
             layer.process_after_load = True
             weight = Parameter(torch.empty(output_size_per_partition,
@@ -204,8 +208,8 @@ class AutoQuantLinearMethod(LinearMethodBase):
             layer.scales_zeros = Parameter(scales_zeros, requires_grad=False)
             del layer.weight
         else:
-            qweight, scales_zeros = convert_s4(layer.qweight, layer.qzeros,
-                                                layer.scales)
+            qweight, scales_zeros = convert_s4(layer.qweight.data, layer.qzeros.data,
+                                                layer.scales.data)
             layer.qweight = Parameter(qweight, requires_grad=False)
             layer.scales_zeros = Parameter(scales_zeros, requires_grad=False)
             del layer.qzeros
